@@ -89,26 +89,33 @@ private struct HeaderBar: View {
     }
 }
 
-/// Вкладки со стеклянной «каплей»: ведущий край двигается быстрее, задний догоняет.
+/// Вкладки-кружки в одном стиле с кнопкой настроек.
 private struct LiquidTabs: View {
     @Environment(NotchViewModel.self) var vm
-    @State var leftEdge: CGFloat = 0
-    @State var rightEdge: CGFloat = LiquidTabs.width
     @State var hovered: NotchTab?
-
-    static let width: CGFloat = 34
+    @Namespace private var selection
 
     var body: some View {
-        HStack(spacing: 0) {
+        // Каждая вкладка — такой же кружок, как кнопка настроек справа; выбранная подсвечена,
+        // и подсветка плавно переезжает между кружками.
+        HStack(spacing: 6) {
             ForEach(NotchTab.allCases) { tab in
                 Button {
                     select(tab)
                 } label: {
                     Image(systemName: tab.icon)
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(Color.white.opacity(vm.tab == tab ? 1 : (hovered == tab ? 0.8 : 0.5)))
-                        .frame(width: Self.width, height: 22)
-                        .contentShape(Rectangle())
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(vm.tab == tab ? 1 : (hovered == tab ? 0.8 : 0.55)))
+                        .frame(width: 26, height: 26)
+                        .background {
+                            if vm.tab == tab {
+                                Circle()
+                                    .fill(Color.white.opacity(0.14))
+                                    .matchedGeometryEffect(id: "selected", in: selection)
+                            }
+                        }
+                        .glass(13, highlighted: hovered == tab && vm.tab != tab)
+                        .contentShape(Circle())
                         .overlay(alignment: .topTrailing) { badge(for: tab) }
                 }
                 .buttonStyle(PressableButtonStyle(scale: 0.88))
@@ -118,32 +125,11 @@ private struct LiquidTabs: View {
                 }
             }
         }
-        .background(alignment: .leading) {
-            Capsule()
-                .fill(Color.white.opacity(0.2))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
-                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
-                .frame(width: max(22, rightEdge - leftEdge), height: 22)
-                .offset(x: leftEdge)
-        }
-        .padding(2)
-        .glass(13)
-        .onAppear {
-            let x = CGFloat(vm.tab.index) * Self.width
-            leftEdge = x
-            rightEdge = x + Self.width
-        }
     }
 
     private func select(_ tab: NotchTab) {
         guard tab != vm.tab else { return }
-        let forward = tab.index > vm.tab.index
-        let x = CGFloat(tab.index) * Self.width
-        let fast = Animation.spring(response: 0.22, dampingFraction: 0.8)
-        let slow = Animation.spring(response: 0.38, dampingFraction: 0.78)
-        withAnimation(forward ? fast : slow) { rightEdge = x + Self.width }
-        withAnimation(forward ? slow : fast) { leftEdge = x }
-        withAnimation(Theme.content) { vm.select(tab) }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) { vm.select(tab) }
     }
 
     @ViewBuilder
