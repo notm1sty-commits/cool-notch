@@ -259,6 +259,17 @@ private struct NotificationAccessRow: View {
             case .running:
                 Label("Работает — новые уведомления появятся в чёлке", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
+                LabeledContent("Последнее прочитанное") {
+                    Text(mirror.lastSeen ?? "пока ничего")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.caption)
+                Text("Если приложения нет в чёлке, проверь в «Системных настройках» → «Уведомления» → приложение, что включено «Показывать в Центре уведомлений»: Cool Notch видит только то, что туда попадает.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Чтобы не было двойных баннеров, в «Системных настройках» → «Уведомления» можно выбрать для приложений стиль «Нет» — в чёлке они всё равно появятся.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

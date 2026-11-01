@@ -279,14 +279,6 @@ private struct MediaCard: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let fraction = item.duration > 0 ? min(max(item.position(at: context.date) / item.duration, 0), 1) : 0
             ZStack {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color.black.opacity(0.4)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
-                    .scaleEffect(item.isPlaying ? 0.5 : 1)
-                    .opacity(item.isPlaying ? 0 : 1)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: item.isPlaying)
                 if item.duration > 0 {
                     Text(TimerService.format(item.duration))
                         .font(.system(size: 9.5, weight: .bold).monospacedDigit())
@@ -430,17 +422,27 @@ private struct MediaCard: View {
     }
 }
 
-/// Почему кнопка не сработала — одной строкой вместо исполнителя, с кнопкой «Включить».
+/// Почему кнопка не сработала — одной строкой вместо исполнителя. Полный текст всплывает,
+/// если задержать на ней курсор (обычные подсказки в окне чёлки macOS не показывает).
 private struct ControlIssueRow: View {
     let issue: NowPlayingService.ControlIssue
     var enable: () -> Void
 
+    @State private var hovering = false
+    @State private var showBubble = false
+
     var body: some View {
         HStack(spacing: 6) {
-            switch issue {
-            case .browserJavaScript:
-                message("Чтобы управлять видео отсюда, нужен JavaScript в браузере")
-                Button("Включить", action: enable)
+            if issue == .enablingJavaScript {
+                ProgressView().controlSize(.mini)
+            }
+            Text(short)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.orange)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let button {
+                Button(button.title, action: button.action)
                     .buttonStyle(.plain)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.black)
@@ -448,25 +450,83 @@ private struct ControlIssueRow: View {
                     .frame(height: 18)
                     .background(Capsule().fill(Color.white))
                     .fixedSize()
-            case .enablingJavaScript:
-                ProgressView().controlSize(.mini)
-                message("Включаю в меню браузера…")
-            case .browserJavaScriptManual:
-                message("В меню браузера: Вид → Разработчикам → Разрешить JavaScript из Apple Events")
-            case .notCurrent:
-                message("macOS сейчас управляет другим плеером — нажми ⏯ в самом приложении")
             }
         }
         .frame(height: 18)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+            if inside {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    if hovering { withAnimation(Theme.micro) { showBubble = true } }
+                }
+            } else {
+                withAnimation(Theme.micro) { showBubble = false }
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if showBubble {
+                Text(full)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 250, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(white: 0.13))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5))
+                    )
+                    .offset(y: -24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomLeading)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .zIndex(10)
     }
 
-    private func message(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11.5))
-            .foregroundStyle(Theme.orange)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-            .help(text)
+    private var short: String {
+        switch issue {
+        case .browserJavaScript: return "Нужен JavaScript в браузере"
+        case .enablingJavaScript: return "Включаю в меню браузера…"
+        case .browserJavaScriptManual: return "Включи JavaScript в меню браузера"
+        case .browserAutomation: return "Нет доступа к браузеру"
+        case .noTab: return "Не нашёл вкладку с видео"
+        case .failed: return "Браузер ответил ошибкой"
+        case .notCurrent: return "Нажми ⏯ в самом приложении"
+        }
+    }
+
+    private var full: String {
+        switch issue {
+        case .browserJavaScript:
+            return "macOS управляет только «текущим» плеером. Чтобы запускать и перематывать видео из чёлки, когда играет другое, браузер должен разрешать JavaScript из Apple Events. «Включить» сделает это само."
+        case .enablingJavaScript:
+            return "Нажимаю пункт «Разрешить JavaScript из Apple Events» в меню браузера."
+        case .browserJavaScriptManual:
+            return "Не получилось нажать пункт меню автоматически. В браузере: «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events» (в Safari — меню «Разработка»)."
+        case .browserAutomation:
+            return "macOS не разрешает Cool Notch управлять этим браузером. «Настройки» откроет «Конфиденциальность» → «Автоматизация»: включи там браузер под Cool Notch."
+        case .noTab:
+            return "Не нашёл открытую вкладку с этим видео. Если вкладку закрыли или перезагрузили — карточка обновится сама."
+        case .failed(let message):
+            return "Браузер ответил: \(message)"
+        case .notCurrent:
+            return "macOS отдаёт команды только «текущему» плееру, а у этого приложения нет своего управления. Нажми ⏯ в самом приложении — после этого им можно управлять из чёлки."
+        }
+    }
+
+    private var button: (title: String, action: () -> Void)? {
+        switch issue {
+        case .browserJavaScript, .browserJavaScriptManual:
+            return ("Включить", enable)
+        case .browserAutomation:
+            return ("Настройки", { Permissions.openPane("Privacy_Automation") })
+        default:
+            return nil
+        }
     }
 }
 
@@ -686,21 +746,25 @@ private struct TimerCard: View {
                         .buttonStyle(PressableButtonStyle(scale: 0.88))
                     }
                 }
-                // Сразу под пресетами, а не прижата к низу — без пустого провала посередине.
+                Spacer(minLength: 0)
+                // Низ кнопки — на одной линии с низом «Открыть» в плеере, высота та же.
                 Button {
                     commitDraft()
                     withAnimation(Theme.content) { timer.start(seconds: TimeInterval(preset)) }
                 } label: {
                     Text("Старт")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(Theme.orange)
-                        .frame(maxWidth: .infinity, minHeight: 24)
+                        .frame(maxWidth: .infinity, minHeight: 28)
                         .background(Capsule().fill(Theme.orange.opacity(0.22)))
                 }
                 .buttonStyle(PressableButtonStyle(scale: 0.94))
             }
         }
-        .padding(.vertical, 4)
+        // Карточка плеера по высоте больше своего содержимого и центрирует его: сверху и снизу
+        // по ~6 pt, а «Открыть» (28) стоит в ряду с кнопкой паузы (36) — ещё 4 pt снизу.
+        .padding(.top, 6)
+        .padding(.bottom, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(Theme.content, value: timer.isActive)
     }

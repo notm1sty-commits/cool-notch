@@ -197,11 +197,22 @@ final class NowPlayingService {
         case enablingJavaScript
         /// Включить автоматически не вышло — подсказываем, где пункт меню.
         case browserJavaScriptManual(BrowserKind)
+        /// macOS не разрешает Cool Notch управлять этим браузером («Автоматизация»).
+        case browserAutomation(BrowserKind)
+        /// Не нашли вкладку с этим видео.
+        case noTab
+        /// Браузер ответил ошибкой — показываем её как есть.
+        case failed(String)
         /// macOS отдаёт команды только «текущему» плееру, а у этого приложения нет своего управления.
         case notCurrent
     }
 
     private(set) var controlIssues: [PlayerSource: ControlIssue] = [:]
+    /// Почему последняя команда вкладке не сработала.
+    @ObservationIgnored private var lastBrowserFailure: [PlayerSource: BrowserMediaSource.ControlResult] = [:]
+    /// Какой трек мы уже объявляли для каждого источника: баннер только при настоящей смене
+    /// трека, а не когда macOS переключает «главный» плеер туда-сюда.
+    @ObservationIgnored private var announced: [PlayerSource: String] = [:]
     @ObservationIgnored private var pending: [PlayerSource: PendingPlayback] = [:]
     @ObservationIgnored private var settleTask: Task<Void, Never>?
 
@@ -309,21 +320,50 @@ final class NowPlayingService {
             recompute()
             return
         }
-        markLocal(item.id, playing: willPlay, at: now)
-        recompute()
-        setPlayback(item.id, playing: willPlay) { [weak self] succeeded in
-            guard let self else { return }
-            guard succeeded else {
-                self.commandFailed(item, revertTo: item.isPlaying)
-                return
+
+        guard willPlay else {
+            markLocal(item.id, playing: false, at: now)
+            recompute()
+            setPlayback(item.id, playing: false) { [weak self] succeeded in
+                guard let self, !succeeded else { return }
+                self.commandFailed(item, revertTo: true)
             }
-            self.controlIssues[item.id] = nil
-            if willPlay {
-                for other in self.items where other.isPlaying && other.id != item.id {
-                    self.markLocal(other.id, playing: false, at: Date())
-                    self.setPlayback(other.id, playing: false)
+            return
+        }
+
+        // Сначала ставим на паузу то, что играет, — пока системная команда ещё попадает именно в него.
+        // Если сначала запустить видео, macOS может сделать главным уже его, и «пауза» музыке
+        // остановила бы само видео (отсюда и метания «играет музыка / играет видео»).
+        let others = items.filter { $0.isPlaying && $0.id != item.id }
+        for other in others {
+            markLocal(other.id, playing: false, at: now)
+            setPlayback(other.id, playing: false)
+        }
+        markLocal(item.id, playing: true, at: now)
+        recompute()
+
+        let start = { [weak self] in
+            guard let self else { return }
+            self.setPlayback(item.id, playing: true) { [weak self] succeeded in
+                guard let self else { return }
+                if succeeded {
+                    self.controlIssues[item.id] = nil
+                    return
                 }
-                self.recompute()
+                // Не вышло — возвращаем как было: то, что играло, снова играет.
+                for other in others {
+                    self.markLocal(other.id, playing: true, at: Date())
+                    self.setPlayback(other.id, playing: true)
+                }
+                self.commandFailed(item, revertTo: false)
+            }
+        }
+        if others.isEmpty {
+            start()
+        } else {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                start()
             }
         }
     }
@@ -337,7 +377,12 @@ final class NowPlayingService {
             candidates[item.id] = candidate
         }
         if let kind = item.id.browserKind {
-            controlIssues[item.id] = .browserJavaScript(kind)
+            switch lastBrowserFailure[item.id] {
+            case .notAuthorized?: controlIssues[item.id] = .browserAutomation(kind)
+            case .noTab?: controlIssues[item.id] = .noTab
+            case .failed(let message)?: controlIssues[item.id] = .failed(message)
+            default: controlIssues[item.id] = .browserJavaScript(kind)
+            }
         } else {
             controlIssues[item.id] = .notCurrent
         }
@@ -428,8 +473,9 @@ final class NowPlayingService {
         }
         // Вкладка браузера — через JavaScript в нужной вкладке.
         if let kind = source.browserKind {
-            browser.perform(playing ? .play : .pause, in: kind, url: candidate?.tabURL) { succeeded in
-                completion?(succeeded)
+            browser.perform(playing ? .play : .pause, in: kind, url: candidate?.tabURL) { [weak self] result in
+                self?.lastBrowserFailure[source] = result == .ok ? nil : result
+                completion?(result == .ok)
             }
             return
         }
@@ -474,9 +520,10 @@ final class NowPlayingService {
     }
 
     private func seekInBrowser(_ item: MediaItem, kind: BrowserKind, to seconds: Double, previous: (Double, Date)?) {
-        browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL) { [weak self] succeeded in
+        browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL) { [weak self] result in
             guard let self else { return }
-            if succeeded {
+            self.lastBrowserFailure[item.id] = result == .ok ? nil : result
+            if result == .ok {
                 self.controlIssues[item.id] = nil
                 self.scheduleRefresh()
             } else {
@@ -762,7 +809,11 @@ final class NowPlayingService {
         if key != displayedKey {
             let hadTrack = displayedKey != nil
             displayedKey = key
-            if chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
+            // Объявляем трек, только если у этого источника он действительно сменился.
+            // Когда macOS перекидывает «главный» плеер между уже знакомыми треками — молчим.
+            let isNew = announced[chosen.source] != key
+            announced[chosen.source] = key
+            if isNew, chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
                 onTrackChange?(chosen.track)
             }
         }
@@ -1082,7 +1133,7 @@ final class NowPlayingService {
     private func scheduleSettle() {
         settleTask?.cancel()
         settleTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3.5))
+            try? await Task.sleep(for: .seconds(12.5))
             guard !Task.isCancelled else { return }
             self?.settleRemembered()
         }
@@ -1093,7 +1144,7 @@ final class NowPlayingService {
         let now = Date()
         var changed = false
         for (source, candidate) in candidates where !candidate.isLive && candidate.isPlaying {
-            guard now.timeIntervalSince(candidate.lastUpdate) > 3 else { continue }
+            guard now.timeIntervalSince(candidate.lastUpdate) > 12 else { continue }
             var paused = candidate
             paused.elapsed = paused.position(at: now)
             paused.elapsedTimestamp = now

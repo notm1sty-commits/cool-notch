@@ -10,6 +10,8 @@ struct SystemNotification: Sendable, Equatable {
     let subtitle: String
     let body: String
     let date: Date
+    /// Время доставки как в базе (секунды от 2001 года).
+    var delivered: Double = 0
 }
 
 /// Показывает в чёлке уведомления всех приложений.
@@ -28,10 +30,15 @@ final class NotificationMirror {
     }
 
     private(set) var status: Status = .off
+    /// Последнее уведомление, которое удалось прочитать, — строка диагностики в настройках.
+    private(set) var lastSeen: String?
 
     @ObservationIgnored var onNotification: (@MainActor (SystemNotification) -> Void)?
     private let reader: NotificationDatabaseReader
     @ObservationIgnored private var lastID: Int64?
+    /// Некоторые приложения (Telegram) не добавляют запись, а обновляют прежнюю — новое сообщение
+    /// из того же чата заменяет старое уведомление. Такие обновления ловим по времени доставки.
+    @ObservationIgnored private var lastDelivered: Double = 0
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var fileSource: DispatchSourceFileSystemObject?
     @ObservationIgnored private var isChecking = false
@@ -66,8 +73,9 @@ final class NotificationMirror {
         }, completion: { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success(let id):
-                self.lastID = id
+            case .success(let latest):
+                self.lastID = latest.id
+                self.lastDelivered = latest.delivered
                 self.status = .running
                 self.startWatching()
             case .failure(let error):
@@ -141,15 +149,24 @@ final class NotificationMirror {
     private func check() {
         guard status == .running, !isChecking, let lastID else { return }
         isChecking = true
+        let since = lastDelivered
         reader.perform({ reader in
-            reader.notifications(after: lastID)
+            reader.notifications(after: lastID, since: since)
         }, completion: { [weak self] result in
             guard let self else { return }
             self.isChecking = false
             switch result {
             case .success(let items):
-                guard let newest = items.last else { return }
-                self.lastID = newest.id
+                guard !items.isEmpty else { return }
+                self.lastID = max(lastID, items.map(\.id).max() ?? lastID)
+                self.lastDelivered = max(since, items.map(\.delivered).max() ?? since)
+                if let latest = items.max(by: { $0.delivered < $1.delivered }) {
+                    let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: latest.bundleID)
+                        .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+                        ?? latest.bundleID
+                    let text = latest.title.isEmpty ? latest.body : latest.title
+                    self.lastSeen = "\(app): \(text) · \(latest.date.formatted(date: .omitted, time: .shortened))"
+                }
                 let ownBundle = Bundle.main.bundleIdentifier ?? ""
                 let fresh = items.filter {
                     $0.bundleID != ownBundle && Date().timeIntervalSince($0.date) < 60
@@ -201,29 +218,30 @@ final class NotificationDatabaseReader: @unchecked Sendable {
     }
 
     /// Вызывать только внутри `perform`.
-    func latestID() -> Result<Int64, NotificationDatabaseError> {
+    func latestID() -> Result<(id: Int64, delivered: Double), NotificationDatabaseError> {
         switch openIfNeeded() {
         case .failure(let error): return .failure(error)
         case .success(let db):
             var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "SELECT IFNULL(MAX(rec_id), 0) FROM record", -1, &statement, nil) == SQLITE_OK else {
+            let sql = "SELECT IFNULL(MAX(rec_id), 0), IFNULL(MAX(delivered_date), 0) FROM record"
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
                 return .failure(failure(for: db))
             }
             defer { sqlite3_finalize(statement) }
             guard sqlite3_step(statement) == SQLITE_ROW else { return .failure(failure(for: db)) }
-            return .success(sqlite3_column_int64(statement, 0))
+            return .success((sqlite3_column_int64(statement, 0), sqlite3_column_double(statement, 1)))
         }
     }
 
     /// Вызывать только внутри `perform`.
-    func notifications(after id: Int64) -> Result<[SystemNotification], NotificationDatabaseError> {
+    func notifications(after id: Int64, since delivered: Double) -> Result<[SystemNotification], NotificationDatabaseError> {
         switch openIfNeeded() {
         case .failure(let error): return .failure(error)
         case .success(let db):
             let sql = """
             SELECT r.rec_id, IFNULL(a.identifier, ''), r.data, IFNULL(r.delivered_date, 0)
             FROM record r LEFT JOIN app a ON a.app_id = r.app_id
-            WHERE r.rec_id > ? ORDER BY r.rec_id ASC LIMIT 50
+            WHERE r.rec_id > ? OR IFNULL(r.delivered_date, 0) > ? ORDER BY r.rec_id ASC LIMIT 50
             """
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -231,12 +249,13 @@ final class NotificationDatabaseReader: @unchecked Sendable {
             }
             defer { sqlite3_finalize(statement) }
             sqlite3_bind_int64(statement, 1, id)
+            sqlite3_bind_double(statement, 2, delivered)
 
             var result: [SystemNotification] = []
             while sqlite3_step(statement) == SQLITE_ROW {
                 let recID = sqlite3_column_int64(statement, 0)
                 let bundleID = sqlite3_column_text(statement, 1).map { String(cString: $0) } ?? ""
-                let delivered = sqlite3_column_double(statement, 3)
+                let deliveredAt = sqlite3_column_double(statement, 3)
                 var data = Data()
                 if let bytes = sqlite3_column_blob(statement, 2) {
                     data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 2)))
@@ -248,7 +267,8 @@ final class NotificationDatabaseReader: @unchecked Sendable {
                     title: parsed.title,
                     subtitle: parsed.subtitle,
                     body: parsed.body,
-                    date: delivered > 0 ? Date(timeIntervalSinceReferenceDate: delivered) : Date()
+                    date: deliveredAt > 0 ? Date(timeIntervalSinceReferenceDate: deliveredAt) : Date(),
+                    delivered: deliveredAt
                 )
                 result.append(notification)
             }

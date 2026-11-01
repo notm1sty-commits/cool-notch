@@ -113,14 +113,31 @@ final class BrowserMediaSource: @unchecked Sendable {
         runner.run(Self.script(for: kind, js: action.js, collectAll: false, exactURL: url))
     }
 
-    /// То же, но сообщает, получилось ли: без «JavaScript из Apple Events» браузер откажет.
-    func perform(_ action: Action, in kind: BrowserKind, url: String?, completion: @escaping @MainActor (Bool) -> Void) {
-        runner.run(
-            Self.script(for: kind, js: action.js, collectAll: false, exactURL: url),
-            parse: { $0.stringValue }
-        ) { result in
-            completion(result == "ok")
-        }
+    /// Чем закончилась команда вкладке.
+    enum ControlResult: Equatable, Sendable {
+        case ok
+        /// Нет разрешения «Автоматизация» на управление браузером.
+        case notAuthorized
+        /// В браузере выключен «JavaScript из Apple Events».
+        case javaScriptOff
+        /// Не нашли вкладку с этим видео.
+        case noTab
+        case failed(String)
+    }
+
+    /// То же, но сообщает, что именно произошло.
+    func perform(_ action: Action, in kind: BrowserKind, url: String?, completion: @escaping @MainActor (ControlResult) -> Void) {
+        let source = Self.script(for: kind, js: action.js, collectAll: false, exactURL: url)
+        runner.perform({ _ in
+            let result = AppleScriptRunner.executeDetailed(source)
+            if let text = result.descriptor?.stringValue {
+                return text == "ok" ? ControlResult.ok : .noTab
+            }
+            if result.code == -1743 { return .notAuthorized }
+            let message = result.message ?? "Браузер не ответил"
+            if message.localizedCaseInsensitiveContains("JavaScript") { return .javaScriptOff }
+            return .failed(message)
+        }, completion: completion)
     }
 
     /// Переключает браузер на вкладку с этим медиа (по адресу или заголовку) и выводит его вперёд.

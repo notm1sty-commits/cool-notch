@@ -45,6 +45,17 @@ final class AppleScriptRunner: @unchecked Sendable {
         }
     }
 
+    /// Как `execute`, но с номером ошибки — чтобы понять, что именно не так
+    /// (-1743 — нет разрешения «Автоматизация», выключенный JavaScript в браузере и т. д.).
+    static func executeDetailed(_ source: String) -> (descriptor: NSAppleEventDescriptor?, code: Int?, message: String?) {
+        var error: NSDictionary?
+        let descriptor = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error {
+            return (nil, error[NSAppleScript.errorNumber] as? Int, error[NSAppleScript.errorMessage] as? String)
+        }
+        return (descriptor, nil, nil)
+    }
+
     /// Синхронное выполнение. Вызывать только внутри `perform`.
     static func execute(_ source: String) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
         var error: NSDictionary?
