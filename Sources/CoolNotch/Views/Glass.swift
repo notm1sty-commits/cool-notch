@@ -2,8 +2,8 @@ import AppKit
 import CoreImage
 import SwiftUI
 
-/// Стеклянная поверхность для карточек и кнопок внутри чёлки:
-/// полупрозрачная заливка, «световая» кромка и мягкая тень.
+/// Поверхность карточек и кнопок внутри чёлки: ровная полупрозрачная заливка
+/// и еле заметная граница. Без градиентов, бликов и теней — спокойно, как у Apple.
 struct GlassSurface: ViewModifier {
     var radius: CGFloat
     var highlighted = false
@@ -13,30 +13,12 @@ struct GlassSurface: ViewModifier {
         content.background {
             let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
             shape
-                .fill(
-                    LinearGradient(
-                        colors: [tint.opacity(highlighted ? 0.2 : 0.13), tint.opacity(highlighted ? 0.1 : 0.05)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
+                .fill(tint.opacity(highlighted ? 0.12 : 0.07))
                 .overlay {
-                    shape.strokeBorder(Self.rim, lineWidth: 0.8)
+                    shape.strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
                 }
-                .shadow(color: .black.opacity(0.22), radius: 11, y: 6)
         }
     }
-
-    static let rim = LinearGradient(
-        stops: [
-            .init(color: .white.opacity(0.6), location: 0),
-            .init(color: .white.opacity(0.09), location: 0.35),
-            .init(color: .white.opacity(0.04), location: 0.62),
-            .init(color: .white.opacity(0.34), location: 1),
-        ],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
 }
 
 extension View {

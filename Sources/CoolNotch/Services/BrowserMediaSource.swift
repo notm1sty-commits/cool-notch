@@ -88,6 +88,7 @@ final class BrowserMediaSource: @unchecked Sendable {
 
     enum Action {
         case toggle
+        case play
         case pause
         case seek(Double)
 
@@ -95,6 +96,8 @@ final class BrowserMediaSource: @unchecked Sendable {
             switch self {
             case .toggle:
                 return "(function(){var e=document.querySelector('video,audio');if(!e)return '';if(e.paused){e.play();}else{e.pause();}return 'ok';})()"
+            case .play:
+                return "(function(){var e=document.querySelector('video,audio');if(!e)return '';e.play();return 'ok';})()"
             case .pause:
                 return "(function(){var e=document.querySelector('video,audio');if(!e)return '';e.pause();return 'ok';})()"
             case .seek(let seconds):
@@ -106,6 +109,16 @@ final class BrowserMediaSource: @unchecked Sendable {
     /// Выполняет действие во вкладке с этим адресом (или в первой подходящей, если адрес неизвестен).
     func perform(_ action: Action, in kind: BrowserKind, url: String?) {
         runner.run(Self.script(for: kind, js: action.js, collectAll: false, exactURL: url))
+    }
+
+    /// То же, но сообщает, получилось ли: без «JavaScript из Apple Events» браузер откажет.
+    func perform(_ action: Action, in kind: BrowserKind, url: String?, completion: @escaping @MainActor (Bool) -> Void) {
+        runner.run(
+            Self.script(for: kind, js: action.js, collectAll: false, exactURL: url),
+            parse: { $0.stringValue }
+        ) { result in
+            completion(result == "ok")
+        }
     }
 
     /// Переключает браузер на вкладку с этим медиа (по адресу или заголовку) и выводит его вперёд.

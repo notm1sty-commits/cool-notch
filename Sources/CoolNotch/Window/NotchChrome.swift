@@ -7,22 +7,17 @@ struct ChromeState: Equatable {
     var lifted = false
     var open = false
     /// Выбран стиль «Стекло».
-    var glassStyle = true
+    var glassStyle = false
     /// 0…1 — насколько тёмное стекло.
-    var glassTint: CGFloat = 0.42
-    var chromatic = true
+    var glassTint: CGFloat = 0.6
     var edgeEffects = true
     var jelly = true
     var notchSize = CGSize(width: 185, height: 32)
 }
 
 enum ChromeEvent {
-    /// Переливающееся свечение по контуру (уведомление / зарядка).
+    /// Мягкое свечение по контуру (уведомление / зарядка).
     case glow(green: Bool)
-    /// Блик пробегает по кромке при раскрытии.
-    case openSweep
-    /// Быстрая вспышка кромки при сворачивании.
-    case closeSweep
 }
 
 /// Слой-вью без хит-теста: только картинка.
@@ -46,7 +41,7 @@ final class NotchRootContainer: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// Форма, тень, стекло, кромка и эффекты чёлки на Core Animation.
+/// Форма, тень, стекло и свечение чёлки на Core Animation.
 /// Обновляется каждым кадром пружин без участия SwiftUI.
 @MainActor
 final class NotchChrome {
@@ -62,31 +57,17 @@ final class NotchChrome {
 
     private var state = ChromeState()
 
-    // back
     private let shadowLayer = CALayer()
-    private let fringeRed = CAShapeLayer()
-    private let fringeCyan = CAShapeLayer()
-    private let fringeGreen = CAShapeLayer()
-    // glass + tint
     private let glassMask = CAShapeLayer()
     private let tintLayer = CAShapeLayer()
-    // content
     private let contentMask = CAShapeLayer()
-    // front
+    /// Чёрный «аппаратный» вырез поверх стекла.
     private let hardwareNotch = CAShapeLayer()
-    private let rimGradient = CAGradientLayer()
-    private let rimMask = CAShapeLayer()
-    private let shimmerContainer = CALayer()
-    private let shimmerGradient = CAGradientLayer()
-    private let shimmerMask = CAShapeLayer()
+    /// Тонкая ровная граница — только у стекла, чтобы край читался на светлых обоях.
+    private let hairline = CAShapeLayer()
     private let glowContainer = CALayer()
     private let glowGradient = CAGradientLayer()
     private let glowMask = CAShapeLayer()
-    private let glowWideContainer = CALayer()
-    private let glowWideGradient = CAGradientLayer()
-    private let glowWideMask = CAShapeLayer()
-
-    private var lastRect: CGRect = .zero
 
     init() {
         let glass = NSVisualEffectView(frame: .zero)
@@ -100,7 +81,7 @@ final class NotchChrome {
         setUpLayers()
     }
 
-    /// Собирает иерархию: тень и RGB-кромка → стекло → тонировка → SwiftUI → кромка и эффекты.
+    /// Собирает иерархию: тень → стекло → тонировка → SwiftUI → граница и свечение.
     func install(in root: NSView, content: NSView) {
         for view in [backView, glassHost, tintView, contentContainer, frontView] as [NSView] {
             view.frame = root.bounds
@@ -118,23 +99,14 @@ final class NotchChrome {
         content.autoresizingMask = [.width, .height]
         contentContainer.addSubview(content)
         contentContainer.layer?.mask = contentMask
-        frontView.layerUsesCoreImageFilters = true
     }
 
     private func setUpLayers() {
         backView.layer?.addSublayer(shadowLayer)
         shadowLayer.shadowColor = NSColor.black.cgColor
         shadowLayer.shadowOpacity = 0
-        shadowLayer.shadowRadius = 26
-        shadowLayer.shadowOffset = CGSize(width: 0, height: 12)
-
-        for (layer, color) in [(fringeRed, NSColor(red: 1, green: 0.18, blue: 0.37, alpha: 1)),
-                               (fringeCyan, NSColor(red: 0, green: 0.8, blue: 1, alpha: 1)),
-                               (fringeGreen, NSColor(red: 0.55, green: 1, blue: 0.47, alpha: 1))] {
-            layer.fillColor = color.cgColor
-            layer.opacity = 0
-            backView.layer?.addSublayer(layer)
-        }
+        shadowLayer.shadowRadius = 22
+        shadowLayer.shadowOffset = CGSize(width: 0, height: 10)
 
         tintLayer.fillColor = NSColor.black.cgColor
         tintLayer.opacity = 1
@@ -144,62 +116,22 @@ final class NotchChrome {
         hardwareNotch.opacity = 0
         frontView.layer?.addSublayer(hardwareNotch)
 
-        // Статичная «световая» кромка стекла.
-        rimGradient.colors = [
-            NSColor.white.withAlphaComponent(0.5).cgColor,
-            NSColor.white.withAlphaComponent(0.06).cgColor,
-            NSColor.white.withAlphaComponent(0.02).cgColor,
-            NSColor.white.withAlphaComponent(0.12).cgColor,
-            NSColor.white.withAlphaComponent(0.45).cgColor,
-        ]
-        rimGradient.locations = [0, 0.28, 0.55, 0.78, 1]
-        rimGradient.startPoint = CGPoint(x: 0, y: 0)
-        rimGradient.endPoint = CGPoint(x: 1, y: 1)
-        rimMask.fillColor = nil
-        rimMask.strokeColor = NSColor.white.cgColor
-        rimMask.lineWidth = 1.5
-        rimGradient.mask = rimMask
-        rimGradient.opacity = 0
-        frontView.layer?.addSublayer(rimGradient)
+        hairline.fillColor = nil
+        hairline.strokeColor = NSColor.white.withAlphaComponent(0.1).cgColor
+        hairline.lineWidth = 1
+        hairline.opacity = 0
+        frontView.layer?.addSublayer(hairline)
 
-        // Переливающийся блик, медленно бегущий по кромке, пока чёлка открыта.
-        shimmerGradient.type = .conic
-        shimmerGradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        shimmerGradient.endPoint = CGPoint(x: 0.5, y: 0)
-        shimmerGradient.colors = [
-            NSColor.white.withAlphaComponent(0).cgColor,
-            NSColor.white.withAlphaComponent(0.9).cgColor,
-            NSColor.white.withAlphaComponent(0).cgColor,
-            NSColor.white.withAlphaComponent(0).cgColor,
-            NSColor.white.withAlphaComponent(0.55).cgColor,
-            NSColor.white.withAlphaComponent(0).cgColor,
-        ]
-        shimmerGradient.locations = [0, 0.08, 0.18, 0.5, 0.6, 0.72]
-        shimmerContainer.addSublayer(shimmerGradient)
-        shimmerMask.fillColor = nil
-        shimmerMask.strokeColor = NSColor.white.cgColor
-        shimmerMask.lineWidth = 1.6
-        shimmerContainer.mask = shimmerMask
-        shimmerContainer.opacity = 0
-        frontView.layer?.addSublayer(shimmerContainer)
-
-        // Свечение контура: чёткая линия + размытый ореол.
-        for (container, gradient, mask, width) in [(glowWideContainer, glowWideGradient, glowWideMask, CGFloat(9)),
-                                                   (glowContainer, glowGradient, glowMask, CGFloat(2.4))] {
-            gradient.type = .conic
-            gradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-            gradient.endPoint = CGPoint(x: 0.5, y: 0)
-            container.addSublayer(gradient)
-            mask.fillColor = nil
-            mask.strokeColor = NSColor.white.cgColor
-            mask.lineWidth = width
-            container.mask = mask
-            container.opacity = 0
-            frontView.layer?.addSublayer(container)
-        }
-        if let blur = CIFilter(name: "CIGaussianBlur", parameters: ["inputRadius": 6]) {
-            glowWideContainer.filters = [blur]
-        }
+        glowGradient.type = .conic
+        glowGradient.startPoint = CGPoint(x: 0.5, y: 0.5)
+        glowGradient.endPoint = CGPoint(x: 0.5, y: 0)
+        glowContainer.addSublayer(glowGradient)
+        glowMask.fillColor = nil
+        glowMask.strokeColor = NSColor.white.cgColor
+        glowMask.lineWidth = 1.5
+        glowContainer.mask = glowMask
+        glowContainer.opacity = 0
+        frontView.layer?.addSublayer(glowContainer)
     }
 
     // MARK: - Per-frame
@@ -208,11 +140,11 @@ final class NotchChrome {
         let k = scale
         var g = frame.geometry
 
-        // «Желе»: форма чуть сплющивается и вытягивается от скорости и пружинит обратно.
+        // «Желе»: форма чуть-чуть сплющивается и вытягивается от скорости и пружинит обратно.
         if state.jelly {
             let vw = frame.widthVelocity, vh = frame.heightVelocity
-            let sx = 1 + clamp(vw / 7000, 0.045) - clamp(vh / 9000, 0.03)
-            let sy = 1 + clamp(vh / 5000, 0.07) - clamp(vw / 10000, 0.03)
+            let sx = 1 + clamp(vw / 16000, 0.02) - clamp(vh / 20000, 0.012)
+            let sy = 1 + clamp(vh / 11000, 0.035) - clamp(vw / 22000, 0.012)
             g.width *= sx
             g.height *= sy
         }
@@ -231,40 +163,18 @@ final class NotchChrome {
         tintLayer.path = closed
         glassMask.path = closed
         contentMask.path = closed
-
-        // RGB-кромка: цветные копии расходятся тем сильнее, чем быстрее меняется форма.
-        let speed = abs(frame.widthVelocity) * 0.9 + abs(frame.heightVelocity)
-        let aberration = state.chromatic && frame.isMoving ? Float(min(1, speed / 1100)) : 0
-        for layer in [fringeRed, fringeCyan, fringeGreen] { layer.path = closed }
-        fringeRed.setAffineTransform(CGAffineTransform(translationX: CGFloat(-aberration) * 4 * k, y: 0))
-        fringeCyan.setAffineTransform(CGAffineTransform(translationX: CGFloat(aberration) * 4 * k, y: 0))
-        fringeGreen.setAffineTransform(CGAffineTransform(translationX: 0, y: CGFloat(aberration) * 3 * k))
-        fringeRed.opacity = aberration * 0.85
-        fringeCyan.opacity = aberration * 0.85
-        fringeGreen.opacity = aberration * 0.5
-
-        rimGradient.frame = rect
-        rimMask.frame = CGRect(origin: .zero, size: rect.size)
-        rimMask.path = NotchShape.cgPath(
-            in: CGRect(origin: .zero, size: rect.size), top: g.shoulder * k, bottom: g.bottomRadius * k, closed: false
-        )
-        rimMask.lineWidth = 1.5 * k
+        hairline.path = open
+        hairline.lineWidth = k
 
         let side = max(rect.width, rect.height) * 1.6
-        let square = CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side)
-        for (container, gradient, mask, width) in [(shimmerContainer, shimmerGradient, shimmerMask, CGFloat(1.6)),
-                                                   (glowContainer, glowGradient, glowMask, CGFloat(2.4)),
-                                                   (glowWideContainer, glowWideGradient, glowWideMask, CGFloat(9))] {
-            container.frame = bounds
-            gradient.bounds = CGRect(origin: .zero, size: square.size)
-            gradient.position = CGPoint(x: square.midX, y: square.midY)
-            mask.frame = bounds
-            mask.path = open
-            mask.lineWidth = width * k
-        }
+        glowContainer.frame = bounds
+        glowGradient.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        glowGradient.position = CGPoint(x: rect.midX, y: rect.midY)
+        glowMask.frame = bounds
+        glowMask.path = open
+        glowMask.lineWidth = 1.5 * k
 
         CATransaction.commit()
-        lastRect = rect
     }
 
     private func clamp(_ value: CGFloat, _ limit: CGFloat) -> CGFloat {
@@ -274,40 +184,24 @@ final class NotchChrome {
     // MARK: - State
 
     func apply(_ newState: ChromeState, animated: Bool) {
-        let previous = state
         state = newState
         let k = scale
 
         CATransaction.begin()
-        CATransaction.setAnimationDuration(animated ? 0.35 : 0)
+        CATransaction.setAnimationDuration(animated ? 0.3 : 0)
         CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
 
         let glassActive = newState.glassStyle && newState.lifted
         glassHost.isHidden = !newState.glassStyle
         tintLayer.opacity = glassActive ? Float(newState.glassTint) : 1
-        shadowLayer.shadowOpacity = newState.lifted ? 0.45 : 0
-        rimGradient.opacity = newState.lifted ? (glassActive ? 1 : 0.4) : 0
+        shadowLayer.shadowOpacity = newState.lifted ? 0.4 : 0
+        hairline.opacity = glassActive ? 1 : 0
         hardwareNotch.opacity = glassActive ? 1 : 0
 
         let notchWidth = (newState.notchSize.width + 12) * k
         let notchRect = CGRect(x: (frontView.bounds.width - notchWidth) / 2, y: 0, width: notchWidth, height: newState.notchSize.height * k)
         hardwareNotch.path = NotchShape.cgPath(in: notchRect, top: 6 * k, bottom: 10 * k, closed: true)
-
-        let shimmerOn = newState.open && newState.edgeEffects
-        shimmerContainer.opacity = shimmerOn ? 0.55 : 0
         CATransaction.commit()
-
-        if shimmerOn, shimmerGradient.animation(forKey: "spin") == nil {
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0
-            spin.toValue = Double.pi * 2
-            spin.duration = 7
-            spin.repeatCount = .infinity
-            spin.preferredFrameRateRange = CAFrameRateRange(minimum: 20, maximum: 60, preferred: 60)
-            shimmerGradient.add(spin, forKey: "spin")
-        } else if !shimmerOn, previous.open != newState.open || previous.edgeEffects != newState.edgeEffects {
-            shimmerGradient.removeAnimation(forKey: "spin")
-        }
     }
 
     // MARK: - Events
@@ -316,41 +210,29 @@ final class NotchChrome {
         guard state.edgeEffects else { return }
         switch event {
         case .glow(let green):
+            // Тонкая линия по контуру плавно проявляется и гаснет, медленно переливаясь.
             let colors: [NSColor] = green
-                ? [NSColor(red: 0.19, green: 0.82, blue: 0.35, alpha: 1), NSColor(red: 0.65, green: 1, blue: 0.56, alpha: 1),
-                   NSColor(red: 0.19, green: 0.82, blue: 0.35, alpha: 1), NSColor(red: 0.06, green: 0.75, blue: 0.42, alpha: 1),
-                   NSColor(red: 0.19, green: 0.82, blue: 0.35, alpha: 1)]
-                : [NSColor(red: 1, green: 0.42, blue: 0.53, alpha: 1), NSColor(red: 1, green: 0.72, blue: 0.42, alpha: 1),
-                   NSColor(red: 0.42, green: 0.82, blue: 1, alpha: 1), NSColor(red: 0.7, green: 0.47, blue: 1, alpha: 1),
-                   NSColor(red: 1, green: 0.42, blue: 0.53, alpha: 1)]
-            runSweep(colors: colors, duration: 2.2, peak: 1, turns: 1)
-        case .openSweep:
-            let white = NSColor.white
-            runSweep(colors: [white.withAlphaComponent(0), white, white.withAlphaComponent(0), white.withAlphaComponent(0), white.withAlphaComponent(0)],
-                     duration: 1.0, peak: 0.85, turns: 0.6)
-        case .closeSweep:
-            let white = NSColor.white
-            runSweep(colors: [white.withAlphaComponent(0), white.withAlphaComponent(0.8), white.withAlphaComponent(0), white.withAlphaComponent(0), white.withAlphaComponent(0)],
-                     duration: 0.55, peak: 0.5, turns: -0.35)
-        }
-    }
+                ? [NSColor(red: 0.2, green: 0.84, blue: 0.4, alpha: 1), NSColor(red: 0.62, green: 0.96, blue: 0.62, alpha: 1),
+                   NSColor(red: 0.2, green: 0.84, blue: 0.4, alpha: 1)]
+                : [NSColor(white: 1, alpha: 0.9), NSColor(red: 0.72, green: 0.82, blue: 1, alpha: 1),
+                   NSColor(white: 1, alpha: 0.9)]
+            glowGradient.colors = colors.map(\.cgColor)
 
-    private func runSweep(colors: [NSColor], duration: CFTimeInterval, peak: Float, turns: Double) {
-        let cgColors = colors.map(\.cgColor)
-        for (container, gradient, strength) in [(glowContainer, glowGradient, Float(1)), (glowWideContainer, glowWideGradient, Float(0.75))] {
-            gradient.colors = cgColors
             let fade = CAKeyframeAnimation(keyPath: "opacity")
-            fade.values = [0, peak * strength, peak * strength * 0.9, 0]
-            fade.keyTimes = [0, 0.18, 0.7, 1]
-            fade.duration = duration
-            container.add(fade, forKey: "fade")
+            fade.values = [0, 0.7, 0.7, 0]
+            fade.keyTimes = [0, 0.25, 0.65, 1]
+            fade.duration = 2
+            fade.timingFunctions = [
+                CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .linear), CAMediaTimingFunction(name: .easeIn),
+            ]
+            glowContainer.add(fade, forKey: "fade")
 
             let spin = CABasicAnimation(keyPath: "transform.rotation.z")
             spin.fromValue = 0
-            spin.toValue = Double.pi * 2 * turns
-            spin.duration = duration
-            spin.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            gradient.add(spin, forKey: "spin")
+            spin.toValue = Double.pi * 0.6
+            spin.duration = 2
+            spin.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            glowGradient.add(spin, forKey: "spin")
         }
     }
 }

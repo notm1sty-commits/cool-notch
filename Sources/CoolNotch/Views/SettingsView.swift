@@ -17,11 +17,10 @@ struct SettingsView: View {
     @AppStorage(Pref.systemNowPlaying) var systemNowPlaying = true
     @AppStorage(Pref.systemNotifications) var systemNotifications = true
     @AppStorage(Pref.notchStyle) var notchStyle = "black"
-    @AppStorage(Pref.fxChromatic) var fxChromatic = true
     @AppStorage(Pref.fxEdgeGlow) var fxEdgeGlow = true
     @AppStorage(Pref.fx3D) var fx3D = true
     @AppStorage(Pref.fxJelly) var fxJelly = true
-    @AppStorage(Pref.glassTint) var glassTint = 0.42
+    @AppStorage(Pref.glassTint) var glassTint = 0.6
     @AppStorage(Pref.screenshotsInHistory) var screenshotsInHistory = true
     @AppStorage(Pref.autoCheckUpdates) var autoCheckUpdates = true
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
@@ -47,9 +46,8 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Эффект желе при раскрытии", isOn: $fxJelly)
-                Toggle("RGB-кромка при движении («3D-кино»)", isOn: $fxChromatic)
-                Toggle("Свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
-                Toggle("3D-обложки и карусель", isOn: $fx3D)
+                Toggle("Мягкое свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
+                Toggle("Объёмная карусель плеера", isOn: $fx3D)
                 Text("В режиме энергосбережения и при включённом «Уменьшить движение» эффекты упрощаются автоматически.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

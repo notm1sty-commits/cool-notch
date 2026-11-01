@@ -99,11 +99,10 @@ final class NotchViewModel {
 
     // Оформление (зеркало настроек, чтобы интерфейс сразу реагировал)
     private(set) var glassStyle = true
-    private(set) var fxChromatic = true
     private(set) var fxEdgeGlow = true
     private(set) var fx3D = true
     private(set) var fxJelly = true
-    private(set) var glassTint: Double = 0.42
+    private(set) var glassTint: Double = 0.6
 
     /// Свечение контура: меняется счётчик — пробегает новая волна.
     private(set) var glowTrigger = 0
@@ -146,6 +145,7 @@ final class NotchViewModel {
     @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
     @ObservationIgnored private var lastPresentationKind = 0
     @ObservationIgnored private var lastHovering = false
+    @ObservationIgnored private var browserHintShown: Set<BrowserKind> = []
 
     init() {
         motion = NotchMotion()
@@ -191,6 +191,21 @@ final class NotchViewModel {
                 title: "Таймер завершён",
                 subtitle: minutes > 0 ? "Прошло \(minutes) мин" : nil,
                 duration: 6
+            ))
+        }
+        nowPlaying.onBrowserControlUnavailable = { [weak self] kind in
+            guard let self, !self.browserHintShown.contains(kind) else { return }
+            self.browserHintShown.insert(kind)
+            let menu = kind == .safari
+                ? "меню «Разработка» → «Разрешить JavaScript из Apple Events»"
+                : "меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events»"
+            self.post(NotchBanner(
+                icon: .app(kind.bundleID),
+                tint: .white,
+                title: "Открыл вкладку — нажми там ⏯",
+                subtitle: "Чтобы управлять видео прямо из чёлки, пока играет музыка, включи в браузере \(menu).",
+                duration: 8,
+                expanded: true
             ))
         }
         nowPlaying.onTrackChange = { [weak self] track in
@@ -240,8 +255,6 @@ final class NotchViewModel {
     func reloadPrefs() {
         let glass = UserDefaults.standard.string(forKey: Pref.notchStyle) != "black"
         if glass != glassStyle { glassStyle = glass }
-        let chromatic = Pref.bool(Pref.fxChromatic)
-        if chromatic != fxChromatic { fxChromatic = chromatic }
         let edge = Pref.bool(Pref.fxEdgeGlow)
         if edge != fxEdgeGlow { fxEdgeGlow = edge }
         let depth = Pref.bool(Pref.fx3D)
@@ -260,7 +273,6 @@ final class NotchViewModel {
             open: isOpen,
             glassStyle: glassStyle,
             glassTint: CGFloat(glassTint),
-            chromatic: fxChromatic && !reduced,
             edgeEffects: fxEdgeGlow && !reduced,
             jelly: fxJelly && !reduced,
             notchSize: notchSize
@@ -295,12 +307,6 @@ final class NotchViewModel {
     }
 
     // MARK: Media deck
-
-    var selectedItem: MediaItem? {
-        let items = nowPlaying.items
-        guard !items.isEmpty else { return nil }
-        return items[min(max(deckIndex, 0), items.count - 1)]
-    }
 
     func selectDeck(_ index: Int) {
         let clamped = min(max(index, 0), max(nowPlaying.items.count - 1, 0))
@@ -515,7 +521,6 @@ final class NotchViewModel {
         bannerQueue.removeAll()
         banner = nil
         isOpen = true
-        onChromeEvent?(.openSweep)
         if Pref.bool(Pref.haptics) {
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         }
@@ -531,7 +536,6 @@ final class NotchViewModel {
         isOpen = false
         isTyping = false
         isDropTargeted = false
-        onChromeEvent?(.closeSweep)
         onClose?()
     }
 

@@ -41,9 +41,12 @@ private struct MediaDeck: View {
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @State var position: Double = 0
     @State var dragOrigin: Double?
+    /// Порядок карточек замораживается, пока чёлка открыта: нажал паузу — карточка
+    /// остаётся на месте, а не уезжает в конец списка.
+    @State var order: [PlayerSource] = []
 
     var body: some View {
-        let items = vm.nowPlaying.items
+        let items = ordered(vm.nowPlaying.items)
         let depth = vm.fx3D && !reduceMotion && !vm.lowPower
         GeometryReader { geo in
             let cardWidth = max(220, geo.size.width - 100)
@@ -96,14 +99,34 @@ private struct MediaDeck: View {
                 }
             }
         }
-        .onAppear { position = Double(vm.deckIndex) }
+        .onAppear {
+            order = vm.nowPlaying.items.map(\.id)
+            position = Double(vm.deckIndex)
+        }
         .onChange(of: vm.deckIndex) { _, newValue in
             withAnimation(Theme.deck) { position = Double(newValue) }
         }
-        .onChange(of: items.map(\.id)) { _, _ in
-            vm.selectDeck(vm.deckIndex)
-            withAnimation(Theme.deck) { position = Double(vm.deckIndex) }
+        .onChange(of: vm.nowPlaying.items.map(\.id)) { oldIDs, ids in
+            // Выбранная карточка остаётся выбранной, даже если источники поменялись местами.
+            let before = Self.merge(order, oldIDs)
+            let selected = before.indices.contains(vm.deckIndex) ? before[vm.deckIndex] : nil
+            order = Self.merge(order, ids)
+            let index = selected.flatMap { order.firstIndex(of: $0) } ?? min(vm.deckIndex, max(order.count - 1, 0))
+            vm.selectDeck(index)
+            withAnimation(Theme.deck) { position = Double(index) }
         }
+    }
+
+    private static func merge(_ order: [PlayerSource], _ ids: [PlayerSource]) -> [PlayerSource] {
+        let kept = order.filter { ids.contains($0) }
+        return kept + ids.filter { !kept.contains($0) }
+    }
+
+    private func ordered(_ items: [MediaItem]) -> [MediaItem] {
+        guard !order.isEmpty else { return items }
+        var result = order.compactMap { id in items.first { $0.id == id } }
+        for item in items where !order.contains(item.id) { result.append(item) }
+        return result
     }
 
     private func dragGesture(cardWidth: CGFloat, count: Int) -> some Gesture {
@@ -160,9 +183,8 @@ private struct DeckCardEffect: ViewModifier, Animatable {
         let offset = Double(index) - position
         let amount = min(1, abs(offset))
         content
-            .rotation3DEffect(.degrees(depth ? -offset * 32 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
-            .scaleEffect(1 - amount * 0.06)
-            .blur(radius: depth && amount > 0.01 ? amount * 5 : 0)
+            .rotation3DEffect(.degrees(depth ? -offset * 14 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
+            .scaleEffect(1 - amount * 0.05)
             .opacity(1 - amount)
             .offset(x: CGFloat(offset) * spacing)
             .allowsHitTesting(abs(offset) < 0.5)
@@ -178,7 +200,6 @@ private struct MediaCard: View {
     let depth: Bool
 
     @State var tilt = CGSize.zero
-    @State var shine = UnitPoint(x: 0.3, y: 0.2)
     @State var appeared = false
     @State var opened = false
 
@@ -189,7 +210,7 @@ private struct MediaCard: View {
         }
         .onAppear {
             if depth {
-                withAnimation(.spring(response: 0.85, dampingFraction: 0.68).delay(0.1)) { appeared = true }
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.9).delay(0.08)) { appeared = true }
             } else {
                 appeared = true
             }
@@ -218,22 +239,18 @@ private struct MediaCard: View {
                         .foregroundStyle(.white.opacity(0.4))
                 }
                 if item.isVideo { videoOverlay }
-                RadialGradient(colors: [.white.opacity(depth && tilt != .zero ? 0.25 : 0), .clear], center: shine, startRadius: 0, endRadius: size.width * 0.8)
-                    .blendMode(.softLight)
-                    .allowsHitTesting(false)
             }
             .frame(width: size.width, height: size.height)
             .clipShape(shape)
             .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
-            .rotation3DEffect(.degrees(depth ? Double(tilt.width) * 22 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
-            .rotation3DEffect(.degrees(depth ? Double(-tilt.height) * 22 : 0), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
+            .rotation3DEffect(.degrees(depth ? Double(tilt.width) * 8 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.5)
+            .rotation3DEffect(.degrees(depth ? Double(-tilt.height) * 8 : 0), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
             .scaleEffect(item.isPlaying || item.isVideo ? 1 : 0.92)
             .animation(.spring(response: 0.5, dampingFraction: 0.6), value: item.isPlaying)
         }
         .frame(width: size.width, height: size.height)
-        .rotation3DEffect(.degrees(appeared ? 0 : -38), axis: (x: 0.35, y: 1, z: 0), perspective: 0.55)
-        .scaleEffect(appeared ? 1 : 0.82)
+        .scaleEffect(appeared ? 1 : 0.96)
         .opacity(appeared ? 1 : 0)
         .contentShape(shape)
         .onContinuousHover { phase in
@@ -241,12 +258,10 @@ private struct MediaCard: View {
             case .active(let point):
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                     tilt = CGSize(width: point.x / size.width - 0.5, height: point.y / size.height - 0.5)
-                    shine = UnitPoint(x: point.x / size.width, y: point.y / size.height)
                 }
             case .ended:
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.6)) {
                     tilt = .zero
-                    shine = UnitPoint(x: 0.3, y: 0.2)
                 }
             }
         }
@@ -321,7 +336,7 @@ private struct MediaCard: View {
                     .tracking(-0.4)
                     .lineLimit(1)
                 if item.isPlaying {
-                    EqualizerView(color: item.accent, isPlaying: true, animated: !vm.lowPower)
+                    EqualizerView(color: item.accent, isPlaying: true, lowPower: vm.lowPower)
                         .frame(width: 20, height: 12)
                         .transition(.scale.combined(with: .opacity))
                 }

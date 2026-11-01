@@ -27,7 +27,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !isDemo {
             viewModel.updates.start()
             if !Pref.bool(Pref.onboardingDone) || CommandLine.arguments.contains("--onboarding") {
-                showOnboarding()
+                // Чуть позже запуска: к этому моменту чёлка уже на месте и приложение готово принять фокус.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showOnboarding() }
             }
         }
         if isDemo {
@@ -103,13 +104,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// При первом запуске сразу просим все разрешения в одном окне.
     func showOnboarding() {
         if onboardingWindow == nil {
-            let view = OnboardingView(nowPlaying: viewModel?.nowPlaying) { [weak self] in
-                Pref.set(true, Pref.onboardingDone)
-                self?.onboardingWindow?.close()
-                self?.viewModel?.clipboard.updateScreenshotWatching()
-                self?.viewModel?.notifications.update(enabled: Pref.bool(Pref.systemNotifications))
-                self?.viewModel?.open(pinned: false)
-            }
+            let view = OnboardingView(
+                onFinish: { [weak self] in
+                    Pref.set(true, Pref.onboardingDone)
+                    self?.onboardingWindow?.close()
+                    self?.viewModel?.clipboard.updateScreenshotWatching()
+                    self?.viewModel?.notifications.update(enabled: Pref.bool(Pref.systemNotifications))
+                    self?.viewModel?.open(pinned: false)
+                },
+                bringToFront: { [weak self] in
+                    self?.onboardingWindow?.orderFrontRegardless()
+                }
+            )
             let hosting = NSHostingController(rootView: view)
             let window = NSWindow(contentViewController: hosting)
             window.title = "Добро пожаловать в Cool Notch"
@@ -121,7 +127,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.center()
             onboardingWindow = window
         }
+        guard let window = onboardingWindow else { return }
+        // У приложения без иконки в Dock macOS не всегда отдаёт фокус при запуске, и окно
+        // оказывалось под другими. Поэтому поднимаем его над всеми, а через пару секунд
+        // возвращаем обычный уровень, чтобы не закрывать Системные настройки.
+        window.level = .floating
         NSApp.activate()
-        onboardingWindow?.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        window.makeKey()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak window] in
+            window?.level = .normal
+        }
     }
 }

@@ -5,8 +5,9 @@ import SwiftUI
 
 /// Первый запуск: все разрешения сразу, в одном окне, со статусами.
 struct OnboardingView: View {
-    var nowPlaying: NowPlayingService?
     var onFinish: () -> Void
+    /// Вернуть окно на передний план (например, когда в Системных настройках что-то включили).
+    var bringToFront: () -> Void = {}
 
     @State private var accessibility = AXIsProcessTrusted()
     @State private var fullDisk = Permissions.hasFullDiskAccess
@@ -14,54 +15,63 @@ struct OnboardingView: View {
     @State private var automation: [Permissions.AutomationTarget] = []
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var requesting = false
-    @State private var appeared = false
+    @State private var askingAutomation = false
+    /// Когда что-то уже просили: если галочки так и нет, предлагаем сброс.
+    @State private var askedAccessibility: Date?
+    @State private var askedFullDisk: Date?
+    @State private var now = Date()
 
     var body: some View {
         VStack(spacing: 0) {
             header
                 .padding(.top, 34)
-                .padding(.bottom, 22)
+                .padding(.bottom, 20)
 
             VStack(spacing: 8) {
                 PermissionRow(
                     icon: "hand.raised.fill",
                     tint: .blue,
                     title: "Универсальный доступ",
-                    detail: "Кнопки ⏯ ⏭ ⏮ для любого плеера, раскрытие по наведению.",
-                    granted: accessibility,
-                    action: { MediaKeys.requestAccess(); Permissions.openPane("Privacy_Accessibility") }
+                    detail: "Кнопки ⏯ ⏭ ⏮ для любого плеера.",
+                    status: accessibility ? .granted : .needed,
+                    hint: stuck(askedAccessibility, granted: accessibility) ? Self.staleHint : nil,
+                    action: { requestAccessibility() },
+                    reset: stuck(askedAccessibility, granted: accessibility) ? { Task { await resetAccessibility() } } : nil
                 )
                 PermissionRow(
                     icon: "internaldrive.fill",
                     tint: .gray,
                     title: "Полный доступ к диску",
-                    detail: "Уведомления всех приложений в чёлке. Журнал читается только на этом Маке.",
-                    granted: fullDisk,
-                    action: { Permissions.openPane("Privacy_AllFiles") }
+                    detail: "Уведомления всех приложений и скриншоты. Всё читается только на этом Маке.",
+                    status: fullDisk ? .granted : .needed,
+                    hint: stuck(askedFullDisk, granted: fullDisk) ? Self.staleHint : nil,
+                    action: { requestFullDisk() },
+                    reset: stuck(askedFullDisk, granted: fullDisk) ? { Task { await resetFullDisk() } } : nil
                 )
                 PermissionRow(
                     icon: "camera.viewfinder",
                     tint: .purple,
                     title: "Папка со скриншотами",
                     detail: "Новые снимки экрана попадают в историю копирования.",
-                    granted: screenshots == .granted,
-                    denied: screenshots == .denied,
-                    action: { Task { screenshots = await Permissions.requestScreenshotFolder() } }
+                    status: screenshots == .granted || fullDisk ? .granted : (screenshots == .denied ? .denied : .needed),
+                    action: { Task { screenshots = await Permissions.requestScreenshotFolder() } },
+                    reset: screenshots == .denied && !fullDisk ? { Task { await resetScreenshots() } } : nil
                 )
                 PermissionRow(
                     icon: "music.note",
                     tint: .pink,
                     title: "Плееры и браузеры",
                     detail: automationDetail,
-                    granted: !automation.isEmpty && automation.allSatisfy { $0.state == .granted },
-                    denied: automation.contains { $0.state == .denied },
-                    action: { Task { await requestAutomation() } }
+                    status: automationStatus,
+                    busy: askingAutomation,
+                    action: { Task { await requestAutomation() } },
+                    reset: automationStatus == .denied ? { Task { await resetAutomation() } } : nil
                 )
                 LaunchRow(isOn: $launchAtLogin)
             }
             .padding(.horizontal, 26)
 
-            Spacer(minLength: 18)
+            Spacer(minLength: 16)
 
             VStack(spacing: 10) {
                 Button {
@@ -96,65 +106,42 @@ struct OnboardingView: View {
             .padding(.horizontal, 26)
             .padding(.bottom, 24)
         }
-        .frame(width: 500, height: 640)
-        .background(
-            ZStack {
-                Color.black
-                RadialGradient(
-                    colors: [Color(red: 0.25, green: 0.27, blue: 0.4).opacity(0.55), .clear],
-                    center: .top,
-                    startRadius: 10,
-                    endRadius: 420
-                )
-            }
-            .ignoresSafeArea()
-        )
+        .frame(width: 500, height: 660)
+        .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .task {
             screenshots = await Permissions.screenshotFolderState()
-            automation = await Permissions.automationTargets(ask: false)
-            withAnimation(.spring(response: 0.7, dampingFraction: 0.75)) { appeared = true }
+            automation = await Permissions.automationTargets()
             // Пока окно открыто, статусы обновляются сами — включил в настройках и сразу видно галочку.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                accessibility = AXIsProcessTrusted()
-                fullDisk = Permissions.hasFullDiskAccess
+                now = Date()
+                let trusted = AXIsProcessTrusted()
+                let disk = Permissions.hasFullDiskAccess
+                // Что-то включили в Системных настройках — возвращаем окно, чтобы было видно галочку.
+                if (trusted && !accessibility) || (disk && !fullDisk) { bringToFront() }
+                accessibility = trusted
+                fullDisk = disk
                 if screenshots != .granted { screenshots = await Permissions.screenshotFolderState() }
-                automation = await Permissions.automationTargets(ask: false)
+                if !askingAutomation { automation = await Permissions.automationTargets() }
             }
         }
     }
 
     private var header: some View {
         VStack(spacing: 12) {
-            ZStack {
-                Capsule()
-                    .fill(Color.black)
-                    .frame(width: appeared ? 150 : 86, height: appeared ? 42 : 26)
-                    .overlay(
-                        Capsule()
-                            .strokeBorder(
-                                AngularGradient(
-                                    colors: [.white.opacity(0.05), .white.opacity(0.5), .white.opacity(0.05), .white.opacity(0.25), .white.opacity(0.05)],
-                                    center: .center
-                                ),
-                                lineWidth: 1
-                            )
-                    )
-                    .shadow(color: .white.opacity(appeared ? 0.12 : 0), radius: 18)
-                HStack(spacing: 8) {
-                    Image(systemName: "waveform")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color.orange)
-                    Spacer()
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.8))
-                }
-                .frame(width: 112)
-                .opacity(appeared ? 1 : 0)
+            HStack(spacing: 0) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+                Spacer()
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
             }
-            .frame(height: 44)
+            .padding(.horizontal, 14)
+            .frame(width: 150, height: 40)
+            .background(Capsule().fill(Color(white: 0.1)))
 
             Text("Cool Notch")
                 .font(.system(size: 26, weight: .bold, design: .rounded))
@@ -165,92 +152,164 @@ struct OnboardingView: View {
         }
     }
 
-    private var allGranted: Bool {
-        accessibility && fullDisk && screenshots == .granted
-            && automation.allSatisfy { $0.state == .granted || $0.state == .notRunning }
+    private static let staleHint = "Уже включено, а галочки нет? macOS помнит прошлую версию Cool Notch. Нажми «Сбросить», затем включи переключатель ещё раз."
+
+    /// Просили больше 4 секунд назад, а доступа всё нет.
+    private func stuck(_ asked: Date?, granted: Bool) -> Bool {
+        guard let asked, !granted else { return false }
+        return now.timeIntervalSince(asked) > 4
+    }
+
+    private var running: [Permissions.AutomationTarget] {
+        automation.filter { $0.state != .notRunning }
+    }
+
+    private var automationStatus: PermissionRow.Status {
+        if running.isEmpty { return .later }
+        if running.contains(where: { $0.state == .denied }) { return .denied }
+        if running.allSatisfy({ $0.state == .granted }) { return .granted }
+        return .needed
     }
 
     private var automationDetail: String {
-        let running = automation.filter { $0.state != .notRunning }
-        if automation.isEmpty { return "Трек и переход к вкладке: Музыка, Spotify, браузеры." }
+        if automation.isEmpty { return "Название трека и переход к вкладке: Музыка, Spotify, браузеры." }
         if running.isEmpty {
-            return "Спросим, когда откроешь \(automation.map(\.name).prefix(3).joined(separator: ", "))."
+            let names = automation.map(\.name).prefix(3).joined(separator: ", ")
+            return "macOS спросит, когда откроешь \(names). Можно открыть сейчас и нажать «Разрешить»."
         }
-        let names = automation.map { target in
+        return running.map { target in
             switch target.state {
             case .granted: return "\(target.name) ✓"
-            case .denied: return "\(target.name) ✕"
+            case .denied: return "\(target.name) — запрещено"
             default: return target.name
             }
         }
-        return names.joined(separator: " · ")
+        .joined(separator: " · ")
+    }
+
+    private var allGranted: Bool {
+        accessibility && fullDisk && automationStatus != .denied && automationStatus != .needed
+    }
+
+    // MARK: - Requests
+
+    private func requestAccessibility() {
+        askedAccessibility = Date()
+        MediaKeys.requestAccess()
+        Permissions.openPane("Privacy_Accessibility")
+    }
+
+    private func requestFullDisk() {
+        askedFullDisk = Date()
+        // Этот доступ macOS выдаёт только руками — открываем нужный раздел.
+        Permissions.openPane("Privacy_AllFiles")
     }
 
     private func requestAutomation() async {
-        automation = await Permissions.automationTargets(ask: true)
-        if automation.contains(where: { $0.state == .denied }) {
-            Permissions.openPane("Privacy_Automation")
+        askingAutomation = true
+        defer { askingAutomation = false }
+        var targets = await Permissions.automationTargets()
+        if !targets.contains(where: { $0.state != .notRunning }) {
+            // Ничего не запущено — тихо открываем браузер по умолчанию, чтобы macOS было про что спросить.
+            await Permissions.launchDefaultBrowserHidden()
+            targets = await Permissions.automationTargets()
         }
+        for index in targets.indices where targets[index].state != .notRunning && targets[index].state != .granted {
+            // Настоящий запрос к приложению вызывает системный вопрос «Разрешить управлять…?».
+            targets[index].state = await Permissions.askAutomation(targets[index].bundleID)
+            automation = targets
+        }
+        automation = await Permissions.automationTargets()
+        if automationStatus == .denied { Permissions.openPane("Privacy_Automation") }
     }
 
     private func requestAll() async {
         requesting = true
         defer { requesting = false }
         if !accessibility {
+            askedAccessibility = Date()
             MediaKeys.requestAccess()
-            try? await Task.sleep(for: .milliseconds(600))
+            try? await Task.sleep(for: .milliseconds(800))
         }
-        if screenshots != .granted {
+        if screenshots != .granted && !fullDisk {
             screenshots = await Permissions.requestScreenshotFolder()
         }
         await requestAutomation()
         if !fullDisk {
-            // Этот доступ macOS выдаёт только руками — открываем нужный раздел.
-            Permissions.openPane("Privacy_AllFiles")
+            requestFullDisk()
+        } else if !accessibility {
+            Permissions.openPane("Privacy_Accessibility")
         }
+    }
+
+    // MARK: - Reset (после переустановки macOS держит запись о прежней сборке)
+
+    private func resetAccessibility() async {
+        await Permissions.reset("Accessibility")
+        askedAccessibility = Date()
+        MediaKeys.requestAccess()
+        Permissions.openPane("Privacy_Accessibility")
+    }
+
+    private func resetFullDisk() async {
+        await Permissions.reset("SystemPolicyAllFiles")
+        requestFullDisk()
+    }
+
+    private func resetScreenshots() async {
+        await Permissions.reset("SystemPolicyDesktopFolder")
+        screenshots = await Permissions.requestScreenshotFolder()
+    }
+
+    private func resetAutomation() async {
+        await Permissions.reset("AppleEvents")
+        await requestAutomation()
     }
 }
 
 private struct PermissionRow: View {
+    enum Status: Equatable {
+        case needed, granted, denied, later
+    }
+
     let icon: String
     let tint: Color
     let title: String
     let detail: String
-    var granted: Bool
-    var denied = false
+    var status: Status
+    var busy = false
+    var hint: String?
     var action: () -> Void
+    var reset: (() -> Void)?
 
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 32, height: 32)
-                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(tint.gradient))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 32, height: 32)
+                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(tint))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(detail)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                trailing
             }
-            Spacer(minLength: 8)
-            if granted {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundStyle(Color.green)
-                    .transition(.scale.combined(with: .opacity))
-            } else {
-                Button(denied ? "Настройки" : "Разрешить", action: action)
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(Color.white.opacity(hovering ? 0.22 : 0.14)))
-                    .onHover { hovering = $0 }
+            if let hint {
+                Text(hint)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(Color.orange.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 44)
+                    .transition(.opacity)
             }
         }
         .padding(.horizontal, 12)
@@ -258,12 +317,44 @@ private struct PermissionRow: View {
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color.white.opacity(0.05))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.white.opacity(granted ? 0.04 : 0.08), lineWidth: 0.5)
-                )
         )
-        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: granted)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: status)
+        .animation(.easeInOut(duration: 0.2), value: hint)
+    }
+
+    @ViewBuilder
+    private var trailing: some View {
+        HStack(spacing: 6) {
+            if let reset {
+                pill("Сбросить", action: reset)
+            }
+            switch status {
+            case .granted:
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(Color.green)
+                    .transition(.scale.combined(with: .opacity))
+            case .later:
+                pill("Разрешить", action: action)
+                    .opacity(0.7)
+            case .needed, .denied:
+                if busy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    pill(status == .denied ? "Настройки" : "Разрешить", action: action)
+                }
+            }
+        }
+    }
+
+    private func pill(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.plain)
+            .font(.system(size: 11.5, weight: .semibold))
+            .padding(.horizontal, 11)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(Color.white.opacity(hovering ? 0.22 : 0.14)))
+            .onHover { hovering = $0 }
     }
 }
 
@@ -276,7 +367,7 @@ private struct LaunchRow: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 32, height: 32)
-                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.orange.gradient))
+                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.orange))
             VStack(alignment: .leading, spacing: 2) {
                 Text("Запускать при входе")
                     .font(.system(size: 13, weight: .semibold))
@@ -321,6 +412,23 @@ enum Permissions {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Сбрасывает запись о разрешении для Cool Notch. Нужна после обновления ad-hoc сборки:
+    /// переключатель в настройках включён, но относится к прежней версии приложения.
+    static func reset(_ service: String) async {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return }
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            process.arguments = ["reset", service, bundleID]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                process.waitUntilExit()
+            } catch {}
+        }.value
     }
 
     /// Полный доступ к диску: пробуем открыть журнал уведомлений (без доступа macOS не даст).
@@ -369,9 +477,9 @@ enum Permissions {
         ("com.brave.Browser", "Brave"),
     ]
 
-    /// Плееры и браузеры, установленные на Маке, и статус «Автоматизации» для каждого.
+    /// Плееры и браузеры, установленные на Маке, и статус «Автоматизации» для каждого (без вопросов).
     /// macOS умеет спрашивать только про запущенные приложения — остальные спросит при первом использовании.
-    static func automationTargets(ask: Bool) async -> [AutomationTarget] {
+    static func automationTargets() async -> [AutomationTarget] {
         let installed = automationApps.filter { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.0) != nil }
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))
         return await Task.detached {
@@ -379,12 +487,47 @@ enum Permissions {
                 guard running.contains(bundleID) else {
                     return AutomationTarget(bundleID: bundleID, name: name, state: .notRunning)
                 }
-                return AutomationTarget(bundleID: bundleID, name: name, state: automationState(bundleID, ask: ask))
+                return AutomationTarget(bundleID: bundleID, name: name, state: automationState(bundleID))
             }
         }.value
     }
 
-    private static func automationState(_ bundleID: String, ask: Bool) -> State {
+    /// Запускает браузер по умолчанию в фоне (без окна на переднем плане), если это один из поддерживаемых.
+    @MainActor
+    static func launchDefaultBrowserHidden() async {
+        guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!),
+              let bundleID = Bundle(url: appURL)?.bundleIdentifier,
+              automationApps.contains(where: { $0.0 == bundleID }) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.hides = true
+        _ = try? await NSWorkspace.shared.openApplication(at: appURL, configuration: configuration)
+        try? await Task.sleep(for: .seconds(1.5))
+    }
+
+    private static let scriptQueue = DispatchQueue(label: "com.notm1sty.coolnotch.permissions")
+
+    /// Отправляет приложению безобидную команду — так macOS показывает вопрос «Разрешить управлять…?».
+    static func askAutomation(_ bundleID: String) async -> State {
+        let isPlayer = bundleID == "com.apple.Music" || bundleID == "com.spotify.client"
+        let source = isPlayer
+            ? "tell application id \"\(bundleID)\" to get player state"
+            : "tell application id \"\(bundleID)\" to count windows"
+        let code: Int = await withCheckedContinuation { continuation in
+            scriptQueue.async {
+                var error: NSDictionary?
+                _ = NSAppleScript(source: source)?.executeAndReturnError(&error)
+                continuation.resume(returning: (error?[NSAppleScript.errorNumber] as? Int) ?? 0)
+            }
+        }
+        switch code {
+        case 0: return .granted
+        case -1743: return .denied
+        default: return automationState(bundleID)
+        }
+    }
+
+    private static func automationState(_ bundleID: String) -> State {
         var target = AEAddressDesc()
         let bytes = Array(bundleID.utf8)
         let created = bytes.withUnsafeBufferPointer { buffer in
@@ -392,7 +535,7 @@ enum Permissions {
         }
         guard created == OSErr(noErr) else { return .unknown }
         defer { AEDisposeDesc(&target) }
-        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard), AEEventID(typeWildCard), ask)
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard), AEEventID(typeWildCard), false)
         switch status {
         case OSStatus(noErr): return .granted
         case OSStatus(errAEEventNotPermitted): return .denied

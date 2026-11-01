@@ -31,6 +31,7 @@ static MRSetElapsedTimeFn gSetElapsed = NULL;
 
 static NSString *gLastArtworkKey = nil;
 static BOOL gRefreshScheduled = NO;
+static unsigned long gGeneration = 0;
 static NSMutableData *gInputBuffer = nil;
 
 static void emitJSON(NSDictionary *payload) {
@@ -96,33 +97,57 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
     emitJSON(out);
 }
 
+static void scheduleRefresh(void);
+
+/// Название трека, «играет ли» и PID приложения MediaRemote отдаёт разными вызовами.
+/// Если между ними система переключилась на другой плеер (видео ↔ музыка), данные
+/// перемешивались, и карточки в чёлке начинали мигать. Поэтому: PID до и после,
+/// и только самый свежий запрос имеет право что-то отправить.
 static void refreshNow(void) {
     if (gGetInfo == NULL) {
         emitJSON(@{ @"type": @"info", @"empty": @YES });
         return;
     }
+    unsigned long generation = ++gGeneration;
     dispatch_queue_t queue = dispatch_get_main_queue();
-    gGetInfo(queue, ^(CFDictionaryRef rawInfo) {
-        NSDictionary *info = rawInfo != NULL ? (__bridge NSDictionary *)rawInfo : @{};
-        double rate = doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]);
 
-        void (^withPID)(BOOL) = ^(BOOL playing) {
-            if (gGetPID != NULL) {
-                gGetPID(queue, ^(int pid) {
-                    emitInfo(info, playing, pid);
+    void (^readPID)(void (^)(int)) = ^(void (^done)(int)) {
+        if (gGetPID != NULL) {
+            gGetPID(queue, ^(int pid) { done(pid); });
+        } else {
+            done(0);
+        }
+    };
+
+    readPID(^(int pidBefore) {
+        if (generation != gGeneration) {
+            return;
+        }
+        gGetInfo(queue, ^(CFDictionaryRef rawInfo) {
+            NSDictionary *info = rawInfo != NULL ? [(__bridge NSDictionary *)rawInfo copy] : @{};
+            double rate = doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]);
+
+            void (^finish)(BOOL) = ^(BOOL playing) {
+                readPID(^(int pidAfter) {
+                    if (generation != gGeneration) {
+                        return;  // уже идёт более свежий запрос
+                    }
+                    if (pidAfter != pidBefore) {
+                        scheduleRefresh();  // плеер сменился посередине — спросим ещё раз
+                        return;
+                    }
+                    emitInfo(info, playing, pidAfter);
+                });
+            };
+
+            if (gGetIsPlaying != NULL) {
+                gGetIsPlaying(queue, ^(Boolean isPlaying) {
+                    finish(isPlaying || rate > 0);
                 });
             } else {
-                emitInfo(info, playing, 0);
+                finish(rate > 0);
             }
-        };
-
-        if (gGetIsPlaying != NULL) {
-            gGetIsPlaying(queue, ^(Boolean isPlaying) {
-                withPID(isPlaying || rate > 0);
-            });
-        } else {
-            withPID(rate > 0);
-        }
+        });
     });
 }
 

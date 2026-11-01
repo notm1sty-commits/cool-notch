@@ -40,17 +40,16 @@ private struct NotchContent: View {
 
     @ViewBuilder
     private func content(simple: Bool) -> some View {
-        let chromatic = vm.fxChromatic && !simple
         switch vm.presentation {
         case .open:
             ExpandedNotchView()
                 .frame(width: vm.openSize.width, height: vm.openSize.height, alignment: .top)
                 .transition(
                     AsymmetricTransition(
-                        insertion: RevealTransition(blur: 0, scale: 0.93, offset: CGSize(width: 0, height: -14))
-                            .animation(simple ? Theme.reduced : .spring(response: 0.5, dampingFraction: 0.72).delay(0.06)),
-                        removal: RevealTransition(blur: 0, scale: 0.9, offset: CGSize(width: 0, height: -10))
-                            .animation(.easeIn(duration: 0.14))
+                        insertion: RevealTransition(scale: 0.96, offset: CGSize(width: 0, height: -8))
+                            .animation(simple ? Theme.reduced : .spring(response: 0.42, dampingFraction: 0.9).delay(0.07)),
+                        removal: RevealTransition(scale: 0.97, offset: CGSize(width: 0, height: -4))
+                            .animation(.easeOut(duration: 0.12))
                     )
                 )
         case .banner(let banner):
@@ -59,10 +58,10 @@ private struct NotchContent: View {
                 .id(banner.id)
                 .transition(
                     AsymmetricTransition(
-                        insertion: RevealTransition(blur: simple ? 0 : 6, scale: 0.88, offset: CGSize(width: 0, height: -8), chromatic: chromatic)
-                            .animation(simple ? Theme.reduced : .spring(response: 0.5, dampingFraction: 0.7).delay(0.08)),
-                        removal: RevealTransition(blur: 0, scale: 0.9, offset: CGSize(width: 0, height: -6))
-                            .animation(.easeIn(duration: 0.14))
+                        insertion: RevealTransition(scale: 0.95, offset: CGSize(width: 0, height: -6))
+                            .animation(simple ? Theme.reduced : .spring(response: 0.42, dampingFraction: 0.9).delay(0.08)),
+                        removal: RevealTransition(scale: 0.97, offset: CGSize(width: 0, height: -4))
+                            .animation(.easeOut(duration: 0.12))
                     )
                 )
         case .closed:

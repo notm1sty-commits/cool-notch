@@ -19,7 +19,7 @@ struct ShelfView: View {
                         HStack(spacing: 4) {
                             ForEach(shelf.items) { item in
                                 ShelfItemTile(item: item, shelf: shelf)
-                                    .transition(RevealTransition(blur: 6, scale: 0.8, offset: .zero))
+                                    .transition(RevealTransition(scale: 0.8, offset: .zero))
                             }
                         }
                         .padding(.horizontal, 8)
