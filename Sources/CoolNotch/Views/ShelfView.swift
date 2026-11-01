@@ -8,7 +8,7 @@ struct ShelfView: View {
         let shelf = vm.shelf
         HStack(spacing: 12) {
             AirDropZone()
-                .frame(width: 112)
+                .frame(width: 128)
 
             ZStack {
                 if shelf.items.isEmpty {
@@ -78,7 +78,7 @@ private struct AirDropZone: View {
         let hasItems = !vm.shelf.items.isEmpty
         PlaceholderView(
             title: "AirDrop",
-            subtitle: targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми, чтобы отправить всё" : "Брось файл сюда"),
+            subtitle: targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми — отправлю всё" : "Брось файл сюда"),
             fill: Color(red: 0.12, green: 0.5, blue: 1)
         ) {
             AirDropGlyph()

@@ -274,27 +274,52 @@ struct PlaceholderView<Glyph: View>: View {
     @ViewBuilder var glyph: () -> Glyph
 
     var body: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle().fill(fill)
-                glyph()
-            }
-            .frame(width: 40, height: 40)
-            VStack(spacing: 3) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.88))
-                if let subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(Theme.tertiaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+        // Места хватает — столбиком по центру; мало по высоте (заметки) — компактной строкой.
+        ViewThatFits(in: .vertical) {
+            VStack(spacing: 10) {
+                badge
+                VStack(spacing: 3) {
+                    titleText
+                    subtitleText
                 }
+                .multilineTextAlignment(.center)
             }
-            .multilineTextAlignment(.center)
+            HStack(spacing: 12) {
+                badge
+                VStack(alignment: .leading, spacing: 2) {
+                    titleText
+                    subtitleText
+                }
+                .multilineTextAlignment(.leading)
+            }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var badge: some View {
+        ZStack {
+            Circle().fill(fill)
+            glyph()
+        }
+        .frame(width: 40, height: 40)
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.88))
+            .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private var subtitleText: some View {
+        if let subtitle {
+            Text(subtitle)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -331,6 +356,6 @@ struct AirDropGlyph: View {
             let dot = unit * 0.15
             context.fill(Path(ellipseIn: CGRect(x: center.x - dot, y: center.y - dot, width: dot * 2, height: dot * 2)), with: .color(color))
         }
-        .frame(width: 20, height: 20)
+        .frame(width: 17, height: 17)
     }
 }
