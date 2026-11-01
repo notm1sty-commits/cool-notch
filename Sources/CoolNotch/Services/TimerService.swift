@@ -21,7 +21,11 @@ final class TimerService {
     var remainingText: String { Self.format(remaining) }
 
     func start(minutes: Int) {
-        total = TimeInterval(minutes * 60)
+        start(seconds: TimeInterval(minutes * 60))
+    }
+
+    func start(seconds: TimeInterval) {
+        total = max(1, seconds)
         remaining = total
         endDate = Date().addingTimeInterval(total)
         state = .running
@@ -84,6 +88,28 @@ final class TimerService {
             if Pref.bool(Pref.timerSound) { NSSound(named: "Glass")?.play() }
             onFinish?(minutes)
         }
+    }
+
+    /// «90» → 90 минут, «1:30» → 1 мин 30 с, «1:30:00» → 1 ч 30 мин.
+    nonisolated static func parse(_ text: String) -> Int? {
+        let parts = text.trimmingCharacters(in: .whitespaces).split(separator: ":").map { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard !parts.isEmpty, parts.allSatisfy({ $0 != nil }) else { return nil }
+        let values = parts.compactMap { $0 }
+        let seconds: Int
+        switch values.count {
+        case 1: seconds = values[0] * 60
+        case 2: seconds = values[0] * 60 + values[1]
+        case 3: seconds = values[0] * 3600 + values[1] * 60 + values[2]
+        default: return nil
+        }
+        return seconds > 0 ? min(seconds, 24 * 3600) : nil
+    }
+
+    nonisolated static func durationText(_ seconds: TimeInterval) -> String {
+        let value = Int(seconds.rounded())
+        if value % 60 != 0 { return format(seconds) }
+        let minutes = value / 60
+        return minutes >= 60 ? "\(minutes / 60) ч \(minutes % 60) мин" : "\(minutes) мин"
     }
 
     nonisolated static func format(_ seconds: TimeInterval) -> String {

@@ -99,6 +99,9 @@ private struct MediaCandidate {
     var tabURL: String?
     var tabTitle: String?
     var pid: pid_t?
+    /// Системный «Что играет» сообщает только одно приложение. Прежние источники мы помним
+    /// (на паузе), чтобы между YouTube и музыкой можно было переключаться стрелками.
+    var isLive = true
 }
 
 private enum MediaCommand {
@@ -296,7 +299,7 @@ final class NowPlayingService {
             browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL)
             scheduleRefresh()
         case .system:
-            bridge.send("seek \(value)")
+            if candidates[item.id]?.isLive != false { bridge.send("seek \(value)") }
         }
     }
 
@@ -379,6 +382,8 @@ final class NowPlayingService {
         switch target {
         case .music?, .spotify?:
             runner.run("tell application id \"\(target?.bundleID ?? "")\" to \(command.appleScript)")
+        case .system(let bundleID)? where candidates[target!]?.isLive == false:
+            sendToRemembered(command, bundleID: bundleID, tabURL: candidates[target!]?.tabURL)
         case .system?:
             bridge.send(command.bridgeCommand)
         case .browser(let kind)?:
@@ -400,7 +405,27 @@ final class NowPlayingService {
         scheduleRefresh()
     }
 
+    /// Команда источнику, который сейчас не «главный» в системе: адресуем его напрямую.
+    private func sendToRemembered(_ command: MediaCommand, bundleID: String, tabURL: String?) {
+        if let kind = BrowserKind.allCases.first(where: { $0.bundleID == bundleID }) {
+            if command == .toggle {
+                browser.perform(.toggle, in: kind, url: tabURL)
+            } else {
+                browser.focusTab(in: kind, title: "", url: tabURL)
+            }
+        } else if bundleID == PlayerSource.music.bundleID || bundleID == PlayerSource.spotify.bundleID {
+            runner.run("tell application id \"\(bundleID)\" to \(command.appleScript)")
+        } else {
+            // Приложение без скриптов: выводим его вперёд — дальше система сама сделает его главным.
+            openApp(bundleID: bundleID)
+        }
+    }
+
     private func pause(_ target: PlayerSource) {
+        if candidates[target]?.isLive == false {
+            // Запомненный источник и так на паузе — не трогаем живой системный плеер.
+            return
+        }
         if var candidate = candidates[target], candidate.isPlaying {
             let now = Date()
             candidate.elapsed += now.timeIntervalSince(candidate.elapsedTimestamp)
@@ -483,13 +508,20 @@ final class NowPlayingService {
     /// Выбирает, что показать, и обновляет наблюдаемые свойства (только если что-то изменилось).
     private func recompute() {
         // Системный «Что играет» уже знает про Музыку/Spotify — не показываем их дважды.
-        let systemBundles = Set(candidates.keys.compactMap { key -> String? in
-            if case .system(let id) = key { return id }
+        // Запомненный системный источник уступает точному (вкладка браузера, AppleScript).
+        let liveSystemBundles = Set(candidates.values.compactMap { candidate -> String? in
+            if case .system(let id) = candidate.source, candidate.isLive { return id }
             return nil
         })
+        let directBundles = Set(candidates.keys.compactMap { key -> String? in
+            if case .system = key { return nil }
+            return key.bundleID
+        })
         let visible = candidates.values.filter { candidate in
-            if case .system = candidate.source { return true }
-            return !systemBundles.contains(candidate.source.bundleID)
+            if case .system(let id) = candidate.source {
+                return candidate.isLive || !directBundles.contains(id)
+            }
+            return !liveSystemBundles.contains(candidate.source.bundleID)
         }
         let latest: (MediaCandidate, MediaCandidate) -> Bool = { $0.lastActivity < $1.lastActivity }
         let chosen = visible.filter(\.isPlaying).max(by: latest) ?? visible.max(by: latest)
@@ -665,11 +697,15 @@ final class NowPlayingService {
         }
         // Браузер не умеет присылать уведомления, поэтому опрашиваем его (если включено).
         // Если системный «Что играет» уже видит браузер — вкладки опрашивать не нужно.
-        let systemSeesBrowser = candidates.keys.contains { key in
-            if case .system = key { return key.browserKind != nil }
+        let systemSeesBrowser = candidates.values.contains { candidate in
+            if case .system = candidate.source { return candidate.isLive && candidate.source.browserKind != nil }
             return false
         }
         if !systemSeesBrowser { pollBrowsers() }
+
+        // Запомненные источники держим полчаса после последней активности.
+        let stale = candidates.values.filter { !$0.isLive && Date().timeIntervalSince($0.lastActivity) > 30 * 60 }
+        stale.map(\.source).forEach(removeCandidate)
     }
 
     private func refresh(_ player: PlayerSource) {
@@ -755,13 +791,25 @@ final class NowPlayingService {
             systemSources.forEach(removeCandidate)
         case .info(let info):
             guard !info.isEmpty else {
-                systemSources.forEach(removeCandidate)
+                // Источник закрылся (вкладка, плеер) — убираем только живой, запомненные оставляем.
+                systemSources.filter { candidates[$0]?.isLive != false }.forEach(removeCandidate)
                 return
             }
             let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid) : nil
             let source = PlayerSource.system(app?.bundleIdentifier ?? "")
-            // Системный источник всегда один — убираем прежний, если сменилось приложение.
-            for old in systemSources where old != source { candidates.removeValue(forKey: old) }
+            // Система сообщает только одно приложение. Прежнее не выкидываем, а запоминаем на паузе.
+            let now = Date()
+            for old in systemSources where old != source {
+                guard var previous = candidates[old], previous.isLive else { continue }
+                if previous.isPlaying {
+                    previous.elapsed += now.timeIntervalSince(previous.elapsedTimestamp)
+                    previous.elapsedTimestamp = now
+                    previous.isPlaying = false
+                }
+                previous.isLive = false
+                candidates[old] = previous
+            }
+            candidates[source]?.isLive = true
 
             let key = "system|\(info.title)|\(info.artist)|\(info.album)"
             let artworkChanged = upsert(

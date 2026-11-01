@@ -1,5 +1,4 @@
 import AppKit
-import Observation
 import QuartzCore
 
 /// Параметры пружины в терминах Apple: время отклика и доля затухания.
@@ -44,10 +43,9 @@ struct SpringValue {
 }
 
 /// Геометрия чёлки на собственной пружинной физике, синхронно с кадрами дисплея.
-/// Ширина и высота тянутся с разной скоростью — форма «течёт», как Dynamic Island,
-/// а скорость изменения используется для RGB-кромки.
+/// Каждый кадр отдаётся прямо в Core Animation (`onFrame`) — SwiftUI при этом не пересчитывается,
+/// поэтому движение остаётся плавным даже с тенью, стеклом и эффектами.
 @MainActor
-@Observable
 final class NotchMotion {
     struct Geometry: Equatable {
         var width: CGFloat
@@ -56,25 +54,38 @@ final class NotchMotion {
         var shoulder: CGFloat
     }
 
+    struct Frame {
+        var geometry: Geometry
+        /// Скорость изменения ширины и высоты (пт/с) — для «желе» и RGB-кромки.
+        var widthVelocity: CGFloat
+        var heightVelocity: CGFloat
+        var isMoving: Bool
+    }
+
     enum Feel {
         case open, close, morph, hover
     }
 
-    private(set) var width: CGFloat = 185
-    private(set) var height: CGFloat = 32
-    private(set) var bottomRadius: CGFloat = 10
-    private(set) var shoulder: CGFloat = 6
-    /// 0…1 — насколько быстро сейчас меняется форма (для RGB-кромки).
-    private(set) var aberration: CGFloat = 0
+    var onFrame: ((Frame) -> Void)?
+    weak var host: NSView?
 
-    @ObservationIgnored weak var host: NSView?
-    @ObservationIgnored private var springs: [SpringValue] = [SpringValue(185), SpringValue(32), SpringValue(10), SpringValue(6)]
-    @ObservationIgnored private var link: CADisplayLink?
-    @ObservationIgnored private var proxy: DisplayLinkProxy?
-    @ObservationIgnored private var lastTimestamp: CFTimeInterval = 0
+    private var springs: [SpringValue] = [SpringValue(185), SpringValue(32), SpringValue(10), SpringValue(6)]
+    private var link: CADisplayLink?
+    private var proxy: DisplayLinkProxy?
+    private var lastTimestamp: CFTimeInterval = 0
 
-    var geometry: Geometry {
-        Geometry(width: width, height: height, bottomRadius: bottomRadius, shoulder: shoulder)
+    var current: Frame {
+        Frame(
+            geometry: Geometry(
+                width: CGFloat(springs[0].value),
+                height: CGFloat(springs[1].value),
+                bottomRadius: CGFloat(max(0, springs[2].value)),
+                shoulder: CGFloat(max(0, springs[3].value))
+            ),
+            widthVelocity: CGFloat(springs[0].velocity),
+            heightVelocity: CGFloat(springs[1].velocity),
+            isMoving: link != nil
+        )
     }
 
     func animate(to target: Geometry, feel: Feel, reduced: Bool) {
@@ -92,9 +103,10 @@ final class NotchMotion {
         for index in springs.indices {
             springs[index] = SpringValue(Double(targets[index]))
         }
-        publish(aberration: 0)
+        onFrame?(current)
     }
 
+    /// Пружины с небольшим отскоком — «желе». Закрытие быстрее открытия.
     private static func feels(for feel: Feel, reduced: Bool) -> [SpringFeel] {
         if reduced {
             let calm = SpringFeel(response: 0.35, damping: 1)
@@ -102,16 +114,16 @@ final class NotchMotion {
         }
         switch feel {
         case .open:
-            return [SpringFeel(response: 0.52, damping: 0.7), SpringFeel(response: 0.58, damping: 0.74),
-                    SpringFeel(response: 0.5, damping: 0.8), SpringFeel(response: 0.45, damping: 0.85)]
+            return [SpringFeel(response: 0.55, damping: 0.6), SpringFeel(response: 0.62, damping: 0.64),
+                    SpringFeel(response: 0.5, damping: 0.75), SpringFeel(response: 0.45, damping: 0.8)]
         case .close:
-            return [SpringFeel(response: 0.42, damping: 0.88), SpringFeel(response: 0.38, damping: 0.92),
-                    SpringFeel(response: 0.4, damping: 0.95), SpringFeel(response: 0.4, damping: 0.95)]
+            return [SpringFeel(response: 0.42, damping: 0.76), SpringFeel(response: 0.38, damping: 0.8),
+                    SpringFeel(response: 0.4, damping: 0.9), SpringFeel(response: 0.4, damping: 0.9)]
         case .morph:
-            return [SpringFeel(response: 0.48, damping: 0.72), SpringFeel(response: 0.52, damping: 0.76),
-                    SpringFeel(response: 0.46, damping: 0.8), SpringFeel(response: 0.45, damping: 0.85)]
+            return [SpringFeel(response: 0.5, damping: 0.62), SpringFeel(response: 0.55, damping: 0.66),
+                    SpringFeel(response: 0.46, damping: 0.78), SpringFeel(response: 0.45, damping: 0.8)]
         case .hover:
-            return [SpringFeel(response: 0.3, damping: 0.58), SpringFeel(response: 0.3, damping: 0.6),
+            return [SpringFeel(response: 0.32, damping: 0.5), SpringFeel(response: 0.32, damping: 0.52),
                     SpringFeel(response: 0.3, damping: 0.7), SpringFeel(response: 0.3, damping: 0.7)]
         }
     }
@@ -119,9 +131,8 @@ final class NotchMotion {
     private func start() {
         guard link == nil else { return }
         guard let host else {
-            // Нет окна (например, при запуске) — просто встаём в цель.
             for index in springs.indices { springs[index] = SpringValue(springs[index].target) }
-            publish(aberration: 0)
+            onFrame?(current)
             return
         }
         let proxy = DisplayLinkProxy { [weak self] link in
@@ -143,31 +154,17 @@ final class NotchMotion {
         for index in springs.indices {
             if springs[index].step(dt) { moving = true }
         }
-        let speed = abs(springs[0].velocity) * 0.9 + abs(springs[1].velocity)
-        publish(aberration: moving ? CGFloat(min(1, speed / 1100)) : 0)
-
         if !moving {
             link.invalidate()
             self.link = nil
             proxy = nil
             lastTimestamp = 0
         }
-    }
-
-    private func publish(aberration newAberration: CGFloat) {
-        let w = CGFloat(springs[0].value), h = CGFloat(springs[1].value)
-        let r = CGFloat(max(0, springs[2].value)), s = CGFloat(max(0, springs[3].value))
-        if w != width { width = w }
-        if h != height { height = h }
-        if r != bottomRadius { bottomRadius = r }
-        if s != shoulder { shoulder = s }
-        if abs(newAberration - aberration) > 0.004 || (newAberration == 0 && aberration != 0) {
-            aberration = newAberration
-        }
+        onFrame?(current)
     }
 }
 
-/// CADisplayLink требует NSObject-цель — держим её отдельно от наблюдаемой модели.
+/// CADisplayLink требует NSObject-цель.
 final class DisplayLinkProxy: NSObject {
     private let handler: (CADisplayLink) -> Void
 

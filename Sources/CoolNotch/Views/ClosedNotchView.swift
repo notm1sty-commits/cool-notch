@@ -5,7 +5,7 @@ struct ClosedNotchView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
-        let ear = max(0, (vm.motion.width - vm.notchSize.width) / 2)
+        let ear = max(0, (vm.closedSize.width - vm.notchSize.width) / 2)
         HStack(spacing: 0) {
             ZStack { leading }
                 .frame(width: ear, height: vm.notchSize.height)

@@ -9,6 +9,8 @@ APP_NAME="Cool Notch"
 EXECUTABLE="CoolNotch"
 VERSION="${VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
+# Постоянная подпись (например, самоподписанный сертификат) сохраняет разрешения macOS между обновлениями.
+SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 OUT_DIR=".build/app"
 APP_DIR="$OUT_DIR/$APP_NAME.app"
 
@@ -40,7 +42,7 @@ clang -dynamiclib -fobjc-arc -fmodules -O2 -Wall \
   -install_name "@rpath/libCoolNotchMediaBridge.dylib" \
   -o "$APP_DIR/Contents/Frameworks/libCoolNotchMediaBridge.dylib" \
   Helpers/MediaBridge/MediaBridge.m
-codesign --force --sign - "$APP_DIR/Contents/Frameworks/libCoolNotchMediaBridge.dylib"
+codesign --force --sign "$SIGN_IDENTITY" "$APP_DIR/Contents/Frameworks/libCoolNotchMediaBridge.dylib"
 cp Resources/media-bridge.pl "$APP_DIR/Contents/Resources/media-bridge.pl"
 
 # Картинки для демо-режима (--demo), около 200 КБ.
@@ -56,8 +58,12 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-echo "▸ Подпись (ad-hoc)"
-codesign --force --deep --sign - "$APP_DIR"
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+  echo "▸ Подпись (ad-hoc)"
+else
+  echo "▸ Подпись: $SIGN_IDENTITY"
+fi
+codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_DIR"
 codesign --verify --verbose "$APP_DIR"
 
 echo "▸ Архивы"

@@ -69,15 +69,14 @@ final class EqualizerNSView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.masksToBounds = false
         bars = (0..<barCount).map { _ in
             let bar = CALayer()
             bar.cornerRadius = barWidth / 2
             bar.backgroundColor = NSColor.white.cgColor
             bar.transform = CATransform3DMakeScale(1, Self.restScale, 1)
-            layer?.addSublayer(bar)
             return bar
         }
+        attachBars()
     }
 
     required init?(coder: NSCoder) {
@@ -87,8 +86,26 @@ final class EqualizerNSView: NSView {
     // Не перехватываем клики.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    /// macOS может пересоздать слой вью при переносе в окно — тогда столбики и их анимации
+    /// нужно вернуть на место, иначе эквалайзер «замирает».
+    private func attachBars() {
+        guard let root = layer else { return }
+        root.masksToBounds = false
+        for bar in bars where bar.superlayer !== root {
+            bar.removeFromSuperlayer()
+            root.addSublayer(bar)
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachBars()
+        applyAnimations(force: true)
+    }
+
     override func layout() {
         super.layout()
+        attachBars()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         let total = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
@@ -99,6 +116,7 @@ final class EqualizerNSView: NSView {
             x += barWidth + spacing
         }
         CATransaction.commit()
+        applyAnimations(force: false)
     }
 
     func update(color: NSColor, isPlaying: Bool) {
@@ -106,11 +124,18 @@ final class EqualizerNSView: NSView {
             self.color = color
             for bar in bars { bar.backgroundColor = color.cgColor }  // плавная смена цвета (неявная анимация)
         }
-        guard isPlaying != self.isPlaying else { return }
+        let changed = isPlaying != self.isPlaying
         self.isPlaying = isPlaying
+        applyAnimations(force: changed)
+    }
+
+    /// Ставит или снимает анимацию. Без `force` только чинит пропавшие анимации.
+    private func applyAnimations(force: Bool) {
         for (index, bar) in bars.enumerated() {
-            bar.removeAnimation(forKey: "eq")
+            let running = bar.animation(forKey: "eq") != nil
             if isPlaying {
+                guard force || !running else { continue }
+                bar.removeAnimation(forKey: "eq")
                 bar.transform = CATransform3DIdentity
                 let animation = CABasicAnimation(keyPath: "transform.scale.y")
                 animation.fromValue = Self.lows[index % Self.lows.count]
@@ -119,10 +144,12 @@ final class EqualizerNSView: NSView {
                 animation.autoreverses = true
                 animation.repeatCount = .infinity
                 animation.timeOffset = Double(index) * 0.17
+                animation.isRemovedOnCompletion = false
                 animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
                 animation.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
                 bar.add(animation, forKey: "eq")
-            } else {
+            } else if running || force {
+                bar.removeAnimation(forKey: "eq")
                 bar.transform = CATransform3DMakeScale(1, Self.restScale, 1)
             }
         }

@@ -4,7 +4,13 @@ struct HomeView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
-        HStack(spacing: 14) {
+        GeometryReader { geo in
+            content(cardHeight: max(100, geo.size.height - 16))
+        }
+    }
+
+    private func content(cardHeight: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 14) {
             ZStack {
                 if vm.nowPlaying.items.isEmpty {
                     if let external = vm.nowPlaying.externalPlayer {
@@ -22,8 +28,7 @@ struct HomeView: View {
             .animation(Theme.content, value: vm.nowPlaying.items.isEmpty)
 
             TimerCard()
-                .frame(width: 172)
-                .frame(maxHeight: .infinity)
+                .frame(width: 172, height: cardHeight)
         }
     }
 }
@@ -41,7 +46,7 @@ private struct MediaDeck: View {
         let items = vm.nowPlaying.items
         let depth = vm.fx3D && !reduceMotion && !vm.lowPower
         GeometryReader { geo in
-            let cardWidth = max(220, geo.size.width - 64)
+            let cardWidth = max(220, geo.size.width - 100)
             let cardHeight = max(100, geo.size.height - 16)
             VStack(spacing: 4) {
                 ZStack {
@@ -200,17 +205,6 @@ private struct MediaCard: View {
         let size = artSize
         let shape = RoundedRectangle(cornerRadius: artRadius, style: .continuous)
         return ZStack {
-            // Цветное свечение из заранее размытой обложки — без размытия на лету.
-            if let backdrop = item.backdrop {
-                Image(nsImage: backdrop)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: size.width * 0.92, height: size.height * 0.92)
-                    .clipShape(shape)
-                    .blur(radius: 14)
-                    .opacity(item.isPlaying ? 0.75 : 0.25)
-                    .offset(y: 10)
-            }
             ZStack {
                 if let image = item.artwork {
                     Image(nsImage: image)
@@ -224,7 +218,7 @@ private struct MediaCard: View {
                         .foregroundStyle(.white.opacity(0.4))
                 }
                 if item.isVideo { videoOverlay }
-                RadialGradient(colors: [.white.opacity(0.35), .clear], center: shine, startRadius: 0, endRadius: size.width * 0.8)
+                RadialGradient(colors: [.white.opacity(depth && tilt != .zero ? 0.25 : 0), .clear], center: shine, startRadius: 0, endRadius: size.width * 0.8)
                     .blendMode(.softLight)
                     .allowsHitTesting(false)
             }
@@ -427,9 +421,8 @@ private struct ProgressRow: View {
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.white.opacity(0.16))
                         Capsule()
-                            .fill(LinearGradient(colors: [.white.opacity(0.75), .white], startPoint: .leading, endPoint: .trailing))
+                            .fill(Color.white)
                             .frame(width: max(active ? 8 : 5, geo.size.width * fraction))
-                            .shadow(color: .white.opacity(0.4), radius: 5)
                             .animation(dragFraction == nil ? .linear(duration: 1) : nil, value: fraction)
                     }
                     .frame(height: active ? 8 : 5)
@@ -559,32 +552,33 @@ private struct EmptyMusicView: View {
 
 private struct TimerCard: View {
     @Environment(NotchViewModel.self) var vm
-    @AppStorage("timerPresetMinutes") var preset = 5
+    @AppStorage("timerPresetSeconds") var preset = 300
+    @State var editing = false
+    @State var draft = ""
+    @FocusState var fieldFocused: Bool
 
-    private static let presets = [1, 5, 15, 25]
+    private static let presets = [5, 15, 25, 45]
 
     var body: some View {
         let timer = vm.timer
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Таймер").sectionLabelStyle()
                 Spacer()
                 if timer.isActive {
-                    Text("\(Int((timer.total / 60).rounded())) мин").sectionLabelStyle()
+                    Text(TimerService.durationText(timer.total)).sectionLabelStyle()
                         .transition(.opacity)
                 }
             }
 
-            Text(timer.isActive ? timer.remainingText : TimerService.format(Double(preset * 60)))
-                .font(.system(size: 34, weight: timer.isActive ? .regular : .light).monospacedDigit())
-                .tracking(-0.5)
-                .foregroundStyle(timer.isActive ? Theme.orange : .white)
-                .contentTransition(.numericText(countsDown: timer.isActive))
-                .animation(Theme.micro, value: timer.isActive ? timer.remainingText : "\(preset)")
-
-            Spacer(minLength: 0)
-
             if timer.isActive {
+                Text(timer.remainingText)
+                    .font(.system(size: 32, weight: .regular).monospacedDigit())
+                    .tracking(-0.5)
+                    .foregroundStyle(Theme.orange)
+                    .contentTransition(.numericText(countsDown: true))
+                    .animation(Theme.micro, value: timer.remainingText)
+                Spacer(minLength: 0)
                 Capsule()
                     .fill(Theme.orange.opacity(0.2))
                     .frame(height: 4)
@@ -596,52 +590,40 @@ private struct TimerCard: View {
                                 .animation(.linear(duration: 0.5), value: timer.progress)
                         }
                     }
-                    .transition(.opacity)
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
-                    Button {
+                    pill(systemName: "xmark", tint: .white, help: "Отменить") {
                         withAnimation(Theme.content) { timer.stop() }
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 12, weight: .bold))
-                            .frame(maxWidth: .infinity, minHeight: 30)
-                            .background(Capsule().fill(Color.white.opacity(0.14)))
                     }
-                    .buttonStyle(PressableButtonStyle(scale: 0.92))
-                    .help("Отменить")
-                    Button {
+                    pill(systemName: timer.state == .paused ? "play.fill" : "pause.fill", tint: Theme.orange, help: "Пауза") {
                         timer.toggle()
-                    } label: {
-                        Image(systemName: timer.state == .paused ? "play.fill" : "pause.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .contentTransition(.symbolEffect(.replace))
-                            .foregroundStyle(Theme.orange)
-                            .frame(maxWidth: .infinity, minHeight: 30)
-                            .background(Capsule().fill(Theme.orange.opacity(0.24)))
                     }
-                    .buttonStyle(PressableButtonStyle(scale: 0.92))
-                    .help(timer.state == .paused ? "Продолжить" : "Пауза")
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
             } else {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
+                    stepButton("minus") { adjust(-60) }
+                    timeField
+                        .frame(maxWidth: .infinity)
+                    stepButton("plus") { adjust(60) }
+                }
+                HStack(spacing: 4) {
                     ForEach(Self.presets, id: \.self) { minutes in
                         Button {
-                            withAnimation(Theme.micro) { preset = minutes }
+                            withAnimation(Theme.micro) { preset = minutes * 60 }
                         } label: {
                             Text("\(minutes)")
-                                .font(.system(size: 11.5, weight: .semibold))
-                                .foregroundStyle(preset == minutes ? Theme.orange : .white)
-                                .frame(maxWidth: .infinity, minHeight: 24)
-                                .background(Capsule().fill(preset == minutes ? Theme.orange.opacity(0.25) : Color.white.opacity(0.1)))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(preset == minutes * 60 ? Theme.orange : .white)
+                                .frame(maxWidth: .infinity, minHeight: 22)
+                                .background(Capsule().fill(preset == minutes * 60 ? Theme.orange.opacity(0.24) : Color.white.opacity(0.1)))
                         }
                         .buttonStyle(PressableButtonStyle(scale: 0.88))
                     }
                 }
-                .transition(.opacity)
                 Spacer(minLength: 0)
                 Button {
-                    withAnimation(Theme.content) { timer.start(minutes: preset) }
+                    commitDraft()
+                    withAnimation(Theme.content) { timer.start(seconds: TimeInterval(preset)) }
                 } label: {
                     Text("Старт")
                         .font(.system(size: 13, weight: .semibold))
@@ -650,12 +632,80 @@ private struct TimerCard: View {
                         .background(Capsule().fill(Theme.orange.opacity(0.24)))
                 }
                 .buttonStyle(PressableButtonStyle(scale: 0.94))
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
         }
         .padding(13)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .glass(Theme.cardRadius)
         .animation(Theme.content, value: timer.isActive)
+    }
+
+    /// Цифры: клик — ввод с клавиатуры («90» — 90 минут, «1:30» — 1 мин 30 с, «1:30:00» — 1,5 часа).
+    @ViewBuilder
+    private var timeField: some View {
+        if editing {
+            TextField("мм или мм:сс", text: $draft)
+                .textFieldStyle(.plain)
+                .font(.system(size: 26, weight: .light).monospacedDigit())
+                .multilineTextAlignment(.center)
+                .focused($fieldFocused)
+                .onSubmit { commitDraft() }
+                .onAppear {
+                    fieldFocused = true
+                    vm.beginTyping()
+                }
+                .onChange(of: fieldFocused) { _, focused in
+                    if !focused { commitDraft() }
+                }
+        } else {
+            Text(TimerService.format(TimeInterval(preset)))
+                .font(.system(size: 28, weight: .light).monospacedDigit())
+                .contentTransition(.numericText())
+                .animation(Theme.micro, value: preset)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    draft = ""
+                    editing = true
+                }
+                .help("Нажми, чтобы ввести любое время")
+        }
+    }
+
+    private func adjust(_ delta: Int) {
+        withAnimation(Theme.micro) { preset = min(max(preset + delta, 60), 24 * 3600) }
+    }
+
+    private func commitDraft() {
+        guard editing else { return }
+        editing = false
+        vm.endTyping()
+        if let seconds = TimerService.parse(draft) {
+            withAnimation(Theme.micro) { preset = seconds }
+        }
+    }
+
+    private func stepButton(_ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .bold))
+                .frame(width: 24, height: 24)
+                .glass(12)
+        }
+        .buttonStyle(PressableButtonStyle(scale: 0.85))
+    }
+
+    private func pill(systemName: String, tint: Color, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .bold))
+                .contentTransition(.symbolEffect(.replace))
+                .foregroundStyle(tint)
+                .frame(maxWidth: .infinity, minHeight: 30)
+                .background(Capsule().fill(tint == .white ? Color.white.opacity(0.14) : tint.opacity(0.24)))
+        }
+        .buttonStyle(PressableButtonStyle(scale: 0.92))
+        .help(help)
     }
 }

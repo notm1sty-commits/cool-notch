@@ -7,6 +7,8 @@ final class NotchWindowController {
     static let windowSize = CGSize(width: 820, height: 360)
 
     private let viewModel: NotchViewModel
+    private let chrome = NotchChrome()
+    private var previousApp: NSRunningApplication?
     private var panel: NotchPanel?
     private var monitors: [Any] = []
     private var observers: [NSObjectProtocol] = []
@@ -35,13 +37,31 @@ final class NotchWindowController {
             .environment(\.colorScheme, .dark)
         let hosting = NotchHostingView(rootView: root)
         hosting.sizingOptions = []
-        panel.contentView = hosting
+
+        let container = NotchRootContainer(frame: CGRect(origin: .zero, size: windowSize))
+        container.wantsLayer = true
+        chrome.scale = scale
+        chrome.install(in: container, content: hosting)
+        panel.contentView = container
         self.panel = panel
-        viewModel.motion.host = hosting
+
+        viewModel.motion.host = container
+        viewModel.motion.onFrame = { [weak self] frame in
+            self?.chrome.render(frame)
+        }
+        viewModel.onChromeEvent = { [weak self] event in
+            self?.chrome.fire(event)
+        }
+        viewModel.onRequestKeyboard = { [weak self] in
+            self?.takeKeyboard()
+        }
 
         viewModel.onClose = { [weak self] in self?.resignKeyIfNeeded() }
 
         reposition()
+        chrome.apply(viewModel.chromeState, animated: false)
+        chrome.render(viewModel.motion.current)
+        observeChromeState()
         panel.orderFrontRegardless()
         if !isDemo { installMonitors() }
 
@@ -80,6 +100,7 @@ final class NotchWindowController {
         } else {
             viewModel.updateScreen(notchSize: screen.notchSize, hasNotch: screen.hasNotch)
         }
+        chrome.render(viewModel.motion.current)
     }
 
     // MARK: - Mouse tracking
@@ -143,7 +164,7 @@ final class NotchWindowController {
             if mouseIsDown && !isFileDragging && !viewModel.isOpen { return }
             viewModel.pointerEntered(fileDrag: isFileDragging)
         } else {
-            let editing = panel.isKeyWindow && viewModel.tab == .notes
+            let editing = viewModel.isTyping || (panel.isKeyWindow && viewModel.tab == .notes)
             if !editing { viewModel.pointerExited() }
         }
         updatePolling()
@@ -162,11 +183,38 @@ final class NotchWindowController {
         }
     }
 
+    /// Следим за состоянием оболочки (стекло, тень, эффекты) и передаём его в Core Animation.
+    private func observeChromeState() {
+        withObservationTracking {
+            _ = viewModel.chromeState
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.chrome.apply(self.viewModel.chromeState, animated: true)
+                self.observeChromeState()
+            }
+        }
+    }
+
+    /// Чтобы печатать в чёлке (заметка, время таймера), окно должно принимать клавиатуру.
+    private func takeKeyboard() {
+        guard let panel else { return }
+        if !NSApp.isActive {
+            previousApp = NSWorkspace.shared.frontmostApplication
+            NSApp.activate()
+        }
+        panel.makeKeyAndOrderFront(nil)
+    }
+
     /// Возвращаем клавиатурный фокус предыдущему приложению после закрытия.
     private func resignKeyIfNeeded() {
-        guard let panel, panel.isKeyWindow else { return }
+        guard let panel, panel.isKeyWindow || NSApp.isActive else { return }
         panel.makeFirstResponder(nil)
-        panel.orderOut(nil)
-        panel.orderFrontRegardless()
+        if let previousApp, previousApp.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previousApp.activate()
+        } else {
+            NSApp.deactivate()
+        }
+        previousApp = nil
     }
 }

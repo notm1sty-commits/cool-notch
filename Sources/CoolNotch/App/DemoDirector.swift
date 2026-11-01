@@ -80,7 +80,7 @@ final class DemoDirector {
         await wait(2.4)
 
         // 5. Таймер.
-        withAnimation(Theme.content) { vm.timer.start(minutes: 25) }
+        withAnimation(Theme.content) { vm.timer.start(seconds: 25 * 60) }
         await wait(1.8)
 
         // 6. Листаем источники: YouTube на паузе, Spotify, обратно.
@@ -141,8 +141,16 @@ final class DemoDirector {
             ("hello@coolnotch.app", "Почта"),
             ("Купить: молоко, кофе, бананы", "Заметки"),
         ])
+        if let shot = Self.image("wall") {
+            vm.clipboard.insertDemoImage(shot, title: "Снимок экрана 2026-11-01 в 12.30.15")
+        }
 
-        UserDefaults.standard.set("Купить: молоко, кофе, бананы\nПозвонить маме в 18:00\nДоделать презентацию к пятнице", forKey: Pref.notesText)
+        let now = Date()
+        vm.notes.replaceAll([
+            NotesStore.Note(text: "Купить: молоко, кофе, бананы", date: now.addingTimeInterval(-600)),
+            NotesStore.Note(text: "Позвонить маме в 18:00", date: now.addingTimeInterval(-3600)),
+            NotesStore.Note(text: "Доделать презентацию к пятнице", date: now.addingTimeInterval(-7200)),
+        ])
     }
 }
 

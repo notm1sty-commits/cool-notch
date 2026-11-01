@@ -56,6 +56,21 @@ private struct HeaderBar: View {
                 if vm.battery.hasBattery {
                     BatteryBadge()
                 }
+                if vm.updates.hasUpdate {
+                    Button {
+                        vm.updates.install()
+                        vm.openSettings?()
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.green)
+                            .frame(width: 26, height: 26)
+                            .glass(13)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .help("Установить обновление")
+                    .transition(.scale.combined(with: .opacity))
+                }
                 Button {
                     vm.openSettings?()
                 } label: {
