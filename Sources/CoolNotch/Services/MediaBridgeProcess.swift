@@ -1,0 +1,205 @@
+import Foundation
+
+/// Данные о треке от системного «Что играет».
+struct BridgeInfo: Sendable {
+    var isEmpty: Bool
+    var title = ""
+    var artist = ""
+    var album = ""
+    var duration = 0.0
+    var elapsed = 0.0
+    var rate = 0.0
+    var timestamp = 0.0
+    var isPlaying = false
+    var pid: Int32 = 0
+    var artwork: Data?
+    var hasArtwork = false
+}
+
+enum BridgeEvent: Sendable {
+    case ready
+    case info(BridgeInfo)
+    case stopped
+}
+
+/// Запускает помощник MediaBridge внутри системного /usr/bin/perl (см. Helpers/MediaBridge)
+/// и получает от него системный «Что играет» — так видны любые плееры, включая Яндекс Музыку.
+@MainActor
+final class MediaBridgeProcess {
+    var onEvent: (@MainActor (BridgeEvent) -> Void)?
+    private(set) var isRunning = false
+    /// Включён ли помощник (даже если сейчас перезапускается или сдался после сбоев).
+    private(set) var isEnabled = false
+
+    private var process: Process?
+    private var inputHandle: FileHandle?
+    private var outputPipe: Pipe?
+    private var restartCount = 0
+
+    static let libraryName = "libCoolNotchMediaBridge.dylib"
+
+    /// Есть ли помощник в сборке (при `swift run` его нет).
+    static var isAvailable: Bool { resources != nil }
+
+    private static var resources: (script: URL, library: URL)? {
+        guard let script = Bundle.main.url(forResource: "media-bridge", withExtension: "pl"),
+              let library = Bundle.main.privateFrameworksURL?.appendingPathComponent(libraryName),
+              FileManager.default.fileExists(atPath: library.path),
+              FileManager.default.isExecutableFile(atPath: "/usr/bin/perl") else { return nil }
+        return (script, library)
+    }
+
+    func start() {
+        guard !isEnabled else { return }
+        isEnabled = true
+        restartCount = 0
+        launch()
+    }
+
+    func stop() {
+        isEnabled = false
+        try? inputHandle?.close()
+        process?.terminate()
+    }
+
+    func send(_ command: String) {
+        guard isRunning, let inputHandle else { return }
+        do {
+            try inputHandle.write(contentsOf: Data((command + "\n").utf8))
+        } catch {
+            // Помощник уже завершился — перезапуск произойдёт сам.
+        }
+    }
+
+    private func launch() {
+        guard isEnabled, process == nil, let resources = Self.resources else { return }
+        // Файлы из скачанного архива помечены карантином — снимаем его со своих же файлов,
+        // иначе perl может отказаться загружать библиотеку.
+        removexattr(resources.library.path, "com.apple.quarantine", 0)
+        removexattr(resources.script.path, "com.apple.quarantine", 0)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        process.arguments = [resources.script.path, resources.library.path]
+        let output = Pipe()
+        let input = Pipe()
+        process.standardOutput = output
+        process.standardInput = input
+        process.standardError = FileHandle.nullDevice
+
+        let reader = BridgeLineReader { [weak self] event in
+            self?.received(event)
+        }
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            reader.consume(data)
+        }
+        process.terminationHandler = { [weak self] _ in
+            Task { @MainActor in self?.processExited() }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            output.fileHandleForReading.readabilityHandler = nil
+            return
+        }
+        self.process = process
+        self.inputHandle = input.fileHandleForWriting
+        self.outputPipe = output
+        isRunning = true
+    }
+
+    private func received(_ event: BridgeEvent) {
+        restartCount = 0
+        onEvent?(event)
+    }
+
+    private func processExited() {
+        isRunning = false
+        process = nil
+        inputHandle = nil
+        outputPipe?.fileHandleForReading.readabilityHandler = nil
+        outputPipe = nil
+        onEvent?(.stopped)
+
+        // Упал — пробуем перезапустить с нарастающей паузой, но не бесконечно.
+        guard isEnabled, restartCount < 4 else { return }
+        restartCount += 1
+        let delay = Double(restartCount * restartCount) * 2
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            self?.launch()
+        }
+    }
+}
+
+/// Читает построчный JSON из пайпа (в фоне) и отдаёт события на главный поток.
+private final class BridgeLineReader: @unchecked Sendable {
+    private struct Message: Decodable {
+        var type: String
+        var empty: Bool?
+        var title: String?
+        var artist: String?
+        var album: String?
+        var duration: Double?
+        var elapsed: Double?
+        var rate: Double?
+        var timestamp: Double?
+        var playing: Bool?
+        var pid: Int32?
+        var artwork: String?
+        var hasArtwork: Bool?
+    }
+
+    private var buffer = Data()
+    private let decoder = JSONDecoder()
+    private let deliver: @MainActor (BridgeEvent) -> Void
+
+    init(deliver: @escaping @MainActor (BridgeEvent) -> Void) {
+        self.deliver = deliver
+    }
+
+    func consume(_ data: Data) {
+        buffer.append(data)
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = buffer.subdata(in: buffer.startIndex..<newline)
+            buffer.removeSubrange(buffer.startIndex...newline)
+            guard let message = try? decoder.decode(Message.self, from: line),
+                  let event = Self.event(from: message) else { continue }
+            let deliver = self.deliver
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { deliver(event) }
+            }
+        }
+    }
+
+    private static func event(from message: Message) -> BridgeEvent? {
+        switch message.type {
+        case "ready":
+            return .ready
+        case "info":
+            if message.empty ?? true { return .info(BridgeInfo(isEmpty: true)) }
+            return .info(BridgeInfo(
+                isEmpty: false,
+                title: message.title ?? "",
+                artist: message.artist ?? "",
+                album: message.album ?? "",
+                duration: message.duration ?? 0,
+                elapsed: message.elapsed ?? 0,
+                rate: message.rate ?? 0,
+                timestamp: message.timestamp ?? 0,
+                isPlaying: message.playing ?? false,
+                pid: message.pid ?? 0,
+                artwork: message.artwork.flatMap { Data(base64Encoded: $0) },
+                hasArtwork: message.hasArtwork ?? false
+            ))
+        default:
+            return nil
+        }
+    }
+}
