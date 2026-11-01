@@ -56,7 +56,7 @@ struct NotchBanner: Identifiable, Equatable {
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
-    case home, shelf, clipboard, notes, timer
+    case home, shelf, clipboard, notes, clock
 
     var id: String { rawValue }
 
@@ -66,7 +66,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .shelf: return "tray.full.fill"
         case .clipboard: return "doc.on.clipboard.fill"
         case .notes: return "note.text"
-        case .timer: return "timer"
+        case .clock: return "clock.fill"
         }
     }
 
@@ -76,7 +76,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .shelf: return "Полка"
         case .clipboard: return "Буфер обмена"
         case .notes: return "Быстрые заметки"
-        case .timer: return "Таймер"
+        case .clock: return "Часы"
         }
     }
 
@@ -128,6 +128,7 @@ final class NotchViewModel {
     let clipboard: ClipboardService
     let notes: NotesStore
     let timer: TimerService
+    let stopwatch: StopwatchService
     /// Громкость Мака — ползунок в плеере.
     let volume: SystemVolume
     let audio: AudioOutputMonitor
@@ -161,6 +162,7 @@ final class NotchViewModel {
         clipboard = ClipboardService()
         notes = NotesStore()
         timer = TimerService()
+        stopwatch = StopwatchService()
         volume = SystemVolume()
         audio = AudioOutputMonitor()
         notifications = NotificationMirror()
