@@ -30,6 +30,8 @@ struct NotchBanner: Identifiable, Equatable {
 
     enum Kind: Equatable {
         case standard
+        /// «Сейчас играет»: одна живая всплывашка, которая берёт трек из устоявшегося снимка.
+        case nowPlaying
         /// Большая карточка «наушники подключены» с зарядом.
         case airpods(name: String, levels: AirPodsLevels?)
     }
@@ -70,7 +72,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .home: return "Главная"
         case .shelf: return "Полка"
         case .clipboard: return "Буфер обмена"
-        case .notes: return "Заметка"
+        case .notes: return "Быстрые заметки"
         }
     }
 
@@ -191,33 +193,8 @@ final class NotchViewModel {
                 duration: 6
             ))
         }
-        nowPlaying.onTrackChange = { [weak self] track in
-            guard let self, Pref.bool(Pref.trackBanners), !self.isOpen else { return }
-            // Плееры (Яндекс Музыка) присылают название раньше исполнителя — даём им полсекунды.
-            Task { @MainActor [weak self] in
-                if track.artist.isEmpty { try? await Task.sleep(for: .milliseconds(500)) }
-                guard let self, !self.isOpen else { return }
-                let current = self.nowPlaying.track?.title == track.title ? (self.nowPlaying.track ?? track) : track
-                let card = NotchBanner(
-                    icon: .artwork,
-                    tint: self.nowPlaying.accent,
-                    title: current.title,
-                    subtitle: current.artist.isEmpty ? self.nowPlaying.sourceName : current.artist,
-                    duration: 3.2,
-                    action: .openSource
-                )
-                self.post(card)
-                guard current.artist.isEmpty else { return }
-                // Исполнитель пришёл ещё позже — дописываем его в уже показанную всплывашку.
-                for _ in 0..<6 {
-                    try? await Task.sleep(for: .milliseconds(400))
-                    if let artist = self.nowPlaying.track?.artist, !artist.isEmpty,
-                       self.nowPlaying.track?.title == current.title {
-                        self.updateBanner(card.id) { $0.subtitle = artist }
-                        return
-                    }
-                }
-            }
+        nowPlaying.onTrackChange = { [weak self] _ in
+            self?.announceNowPlaying()
         }
         audio.onChange = { [weak self] device, previous in
             self?.audioDeviceChanged(device, previous: previous)
@@ -238,6 +215,7 @@ final class NotchViewModel {
         reloadPrefs()
         motion.jump(to: targetGeometry)
         observeGeometry()
+        observeNowPlaying()
 
         powerObserver = NotificationCenter.default.addObserver(
             forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main
@@ -460,13 +438,14 @@ final class NotchViewModel {
             let rings = [levels?.left, levels?.right, levels?.caseLevel, levels?.left == nil ? levels?.single : nil]
                 .compactMap { $0 }.count
             let batteries = rings == 0 ? 20 : CGFloat(rings) * 30 + CGFloat(rings - 1) * 12
-            // 20 + значок 44 + 12 + текст ~150 + 10 + кольца + 20
-            return max(notchSize.width + 80, 256 + batteries)
+            // 16 + значок 44 + 12 + текст ~150 + 10 + кольца + 16
+            return max(notchSize.width + 24, 248 + batteries)
         }
-        let minimum = notchSize.width + 80
+        // Не уже выреза (с небольшим запасом), чтобы короткое название не давало широких полей.
+        let minimum = notchSize.width + 24
         let maximum = openSize.width - 40
-        let fallback: CGFloat = banner?.kind == .standard ? 420 : 400
-        let natural = (bannerContentWidth ?? fallback) + 40
+        let fallback: CGFloat = 380
+        let natural = (bannerContentWidth ?? fallback) + BannerContentHeight.sideGap * 2
         return min(max(natural, minimum), maximum)
     }
 
@@ -637,6 +616,101 @@ final class NotchViewModel {
         } else {
             bannerQueue.append(newBanner)
             if bannerQueue.count > 3 { bannerQueue.removeFirst() }
+        }
+    }
+
+    // MARK: Now playing banner
+
+    /// Трек, который показывает всплывашка «Сейчас играет». Обновляется только когда данные
+    /// «устоялись» (~0,35 с без изменений), и всё сразу — название, исполнитель и обложка.
+    /// Поэтому при быстром переключении треков всплывашка не собирает кусочки разных треков.
+    struct NowPlayingSnapshot: Equatable {
+        var title: String
+        /// Исполнитель, а если его нет — альбом.
+        var detail: String
+        var artwork: NSImage?
+        var isVideo: Bool
+        var appName: String
+        var appColor: NSColor
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.title == rhs.title && lhs.detail == rhs.detail && lhs.artwork === rhs.artwork
+                && lhs.isVideo == rhs.isVideo && lhs.appName == rhs.appName && lhs.appColor == rhs.appColor
+        }
+    }
+
+    private(set) var nowPlayingSnapshot: NowPlayingSnapshot?
+    @ObservationIgnored private var snapshotTask: Task<Void, Never>?
+    @ObservationIgnored private var announceTask: Task<Void, Never>?
+
+    private func currentSnapshot() -> NowPlayingSnapshot? {
+        guard let track = nowPlaying.track else { return nil }
+        let bundleID = nowPlaying.source?.bundleID ?? ""
+        return NowPlayingSnapshot(
+            title: track.title,
+            detail: track.artist.isEmpty ? track.album : track.artist,
+            artwork: nowPlaying.artwork,
+            isVideo: nowPlaying.items.first?.isVideo == true,
+            appName: nowPlaying.sourceName,
+            appColor: AppColorCache.color(for: bundleID, icon: nowPlaying.sourceIcon)
+        )
+    }
+
+    private func observeNowPlaying() {
+        withObservationTracking {
+            _ = nowPlaying.track
+            _ = nowPlaying.artwork
+            _ = nowPlaying.sourceName
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.nowPlayingChanged()
+                self?.observeNowPlaying()
+            }
+        }
+    }
+
+    private func nowPlayingChanged() {
+        snapshotTask?.cancel()
+        snapshotTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(350))
+            guard let self, !Task.isCancelled else { return }
+            let fresh = self.currentSnapshot()
+            if fresh != self.nowPlayingSnapshot { self.nowPlayingSnapshot = fresh }
+        }
+    }
+
+    /// Новый трек: показать «Сейчас играет» — или, если она уже на экране (быстро листают треки),
+    /// просто обновить её и продлить, а не выпускать новую следом.
+    private func announceNowPlaying() {
+        guard Pref.bool(Pref.trackBanners), !isOpen else { return }
+        announceTask?.cancel()
+        announceTask = Task { @MainActor [weak self] in
+            // Плееры присылают трек по кусочкам (название, потом исполнитель, потом обложка) — ждём.
+            try? await Task.sleep(for: .milliseconds(450))
+            guard let self, !Task.isCancelled, !self.isOpen else { return }
+            self.snapshotTask?.cancel()
+            self.nowPlayingSnapshot = self.currentSnapshot()
+            if self.banner?.kind == .nowPlaying {
+                self.extendBanner(by: 3.2)
+                return
+            }
+            if self.bannerQueue.contains(where: { $0.kind == .nowPlaying }) { return }
+            self.post(NotchBanner(
+                icon: .artwork,
+                tint: .white,
+                title: self.nowPlayingSnapshot?.title ?? "",
+                duration: 3.2,
+                action: .openSource,
+                kind: .nowPlaying
+            ))
+        }
+    }
+
+    private func extendBanner(by seconds: TimeInterval) {
+        bannerTask?.cancel()
+        bannerTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            self?.dismissBanner()
         }
     }
 
@@ -822,5 +896,30 @@ enum FileDropLoader {
             let urls = collector.urls
             MainActor.assumeIsolated { completion(urls) }
         }
+    }
+}
+
+/// Средний цвет иконки приложения для подписи «Сейчас играет · Приложение». Считается один раз
+/// и запоминается в настройках, дальше берётся готовый.
+@MainActor
+enum AppColorCache {
+    private static let key = "appIconColors"
+    private static var memory: [String: NSColor] = [:]
+
+    static func color(for bundleID: String, icon: NSImage?) -> NSColor {
+        if let cached = memory[bundleID] { return cached }
+        if let stored = UserDefaults.standard.dictionary(forKey: key)?[bundleID] as? [Double], stored.count == 3 {
+            let color = NSColor(srgbRed: stored[0], green: stored[1], blue: stored[2], alpha: 1)
+            memory[bundleID] = color
+            return color
+        }
+        guard !bundleID.isEmpty else { return .white }
+        let image = icon ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map { NSWorkspace.shared.icon(forFile: $0.path) }
+        guard let color = image?.averageAccentColor?.usingColorSpace(.sRGB) else { return .white }
+        memory[bundleID] = color
+        var all = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        all[bundleID] = [Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent)]
+        UserDefaults.standard.set(all, forKey: key)
+        return color
     }
 }

@@ -15,7 +15,7 @@ struct NotesView: View {
         let store = vm.notes
         VStack(spacing: 8) {
             HStack {
-                Text("Заметки").sectionLabelStyle()
+                Text("Быстрые заметки").sectionLabelStyle()
                 if !store.notes.isEmpty {
                     Text("\(store.notes.count)")
                         .font(.system(size: 10, weight: .semibold).monospacedDigit())

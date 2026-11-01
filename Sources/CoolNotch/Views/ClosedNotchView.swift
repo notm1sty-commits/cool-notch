@@ -149,11 +149,22 @@ struct BannerView: View {
         return date.formatted(date: .omitted, time: .shortened)
     }
 
+    // «Сейчас играет» берёт трек из устоявшегося снимка — название, исполнитель и обложка
+    // меняются вместе, даже если треки листают очень быстро.
+    private var isNowPlaying: Bool { banner.kind == .nowPlaying }
+    private var snapshot: NotchViewModel.NowPlayingSnapshot? { isNowPlaying ? vm.nowPlayingSnapshot : nil }
+    private var titleText: String { snapshot?.title ?? banner.title }
+    private var subtitleText: String? {
+        guard isNowPlaying else { return banner.subtitle }
+        guard let snapshot, !snapshot.detail.isEmpty else { return nil }
+        return snapshot.detail
+    }
+
     private var standard: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: vm.notchSize.height)
             standardRow
-                .padding(.horizontal, 20)
+                .padding(.horizontal, BannerContentHeight.sideGap)
                 .modifier(BannerContentHeight())
                 .background { standardRow.modifier(BannerIdealWidth()) }
             Spacer(minLength: 0)
@@ -180,17 +191,25 @@ struct BannerView: View {
                     }
                 }
                 if banner.icon == .artwork {
-                    Text(vm.nowPlaying.items.first?.isVideo == true ? "ВИДЕО" : "СЕЙЧАС ИГРАЕТ")
-                        .font(.system(size: 10, weight: .bold))
-                        .tracking(0.6)
-                        .foregroundStyle(Theme.tertiaryText)
+                    // «СЕЙЧАС ИГРАЕТ  ЯНДЕКС МУЗЫКА» — приложение тем же шрифтом, цветом своей иконки.
+                    HStack(spacing: 6) {
+                        Text(snapshot?.isVideo == true ? "ВИДЕО" : "СЕЙЧАС ИГРАЕТ")
+                            .foregroundStyle(Theme.tertiaryText)
+                        if let app = snapshot?.appName, !app.isEmpty {
+                            Text(app.uppercased())
+                                .foregroundStyle(Color(nsColor: snapshot?.appColor ?? .white))
+                                .lineLimit(1)
+                        }
+                    }
+                    .font(.system(size: 10, weight: .bold))
+                    .tracking(0.6)
                 }
                 HStack(alignment: .firstTextBaseline) {
-                    Text(banner.title)
+                    Text(titleText)
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
                 }
-                if let subtitle = banner.subtitle {
+                if let subtitle = subtitleText {
                     Text(subtitle)
                         .font(.system(size: 12.5))
                         .foregroundStyle(Theme.secondaryText)
@@ -217,7 +236,7 @@ struct BannerView: View {
     private var icon: some View {
         switch banner.icon {
         case .artwork:
-            ArtworkView(image: vm.nowPlaying.artwork, size: 50, corner: 12)
+            ArtworkView(image: isNowPlaying ? snapshot?.artwork : vm.nowPlaying.artwork, size: 50, corner: 12)
                 .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
         case .app(let bundleID):
             if let icon = Self.appIcon(bundleID) {
@@ -252,7 +271,7 @@ struct AirPodsCard: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: vm.notchSize.height)
             row
-                .padding(.horizontal, 20)
+                .padding(.horizontal, BannerContentHeight.sideGap)
                 .modifier(BannerContentHeight())
             Spacer(minLength: 0)
         }
@@ -369,7 +388,9 @@ struct BannerContentHeight: ViewModifier {
     @Environment(NotchViewModel.self) var vm
 
     static let topGap: CGFloat = 6
-    static let bottomGap: CGFloat = 14
+    /// По бокам столько же, сколько снизу, — при любой длине названия.
+    static let bottomGap: CGFloat = 16
+    static let sideGap: CGFloat = 16
 
     func body(content: Content) -> some View {
         content
