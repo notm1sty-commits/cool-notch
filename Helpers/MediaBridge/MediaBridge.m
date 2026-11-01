@@ -4,7 +4,7 @@
 // своим процессам. Поэтому Cool Notch запускает системный /usr/bin/perl, тот
 // загружает эту библиотеку и вызывает coolnotch_bridge_run(). Дальше библиотека:
 //   • пишет в stdout по одной JSON-строке на каждое изменение трека;
-//   • читает из stdin команды: play, pause, toggle, stop, next, prev, seek <сек>, refresh, burst;
+//   • читает из stdin команды: play, pause, toggle, stop, next, prev, seek <сек>, repeat <1|2|3>, refresh, burst;
 //   • завершается, когда закрывается stdin (то есть когда закрылся Cool Notch).
 //
 // Так чёлка видит любой плеер: приложение Яндекс Музыки, браузер, Spotify и т. д.
@@ -103,6 +103,11 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
     out[@"timestamp"] = @(time);
     out[@"playing"] = @(playing);
     out[@"pid"] = @(pid);
+    // Повтор: 1 — выкл, 2 — один трек, 3 — всё (0 или нет ключа — плеер не сообщает).
+    id repeatMode = info[@"kMRMediaRemoteNowPlayingInfoRepeatMode"];
+    if ([repeatMode isKindOfClass:[NSNumber class]]) {
+        out[@"repeatMode"] = repeatMode;
+    }
 
     id artwork = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
     if ([artwork isKindOfClass:[NSData class]] && [(NSData *)artwork length] > 0) {
@@ -118,8 +123,8 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
         gLastArtworkKey = nil;
     }
 
-    NSString *signature = [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@|%d|%@",
-        title, artist, album, out[@"elapsed"], out[@"rate"], out[@"timestamp"], pid, out[@"hasArtwork"]];
+    NSString *signature = [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@|%d|%@|%@",
+        title, artist, album, out[@"elapsed"], out[@"rate"], out[@"timestamp"], pid, out[@"hasArtwork"], out[@"repeatMode"]];
     BOOL bursting = CFAbsoluteTimeGetCurrent() < gBurstUntil;
     if (bursting && out[@"artwork"] == nil && [signature isEqualToString:gLastInfoSignature]) {
         return;
@@ -151,6 +156,10 @@ static NSDictionary *clientPayload(NSDictionary *info, NSString *bundle, NSNumbe
     out[@"elapsed"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"]));
     out[@"rate"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]));
     out[@"timestamp"] = @(time);
+    id repeatMode = info[@"kMRMediaRemoteNowPlayingInfoRepeatMode"];
+    if ([repeatMode isKindOfClass:[NSNumber class]]) {
+        out[@"repeatMode"] = repeatMode;
+    }
 
     id artwork = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
     if ([artwork isKindOfClass:[NSData class]] && [(NSData *)artwork length] > 0) {
@@ -372,6 +381,17 @@ static void handleCommand(NSString *line) {
     }
     if ([name isEqualToString:@"burst"]) {
         startBurst(1.6);
+        return;
+    }
+    // Повтор: команда «сменить режим повтора» (25) с нужным режимом в параметрах.
+    if ([name isEqualToString:@"repeat"]) {
+        if (parts.count > 1 && gSendCommand != NULL) {
+            CFStringRef *keyRef = (CFStringRef *)dlsym(RTLD_DEFAULT, "kMRMediaRemoteOptionRepeatMode");
+            NSString *key = (keyRef != NULL && *keyRef != NULL) ? (__bridge NSString *)*keyRef : @"kMRMediaRemoteOptionRepeatMode";
+            NSDictionary *options = @{ key: @([parts[1] intValue]) };
+            gSendCommand(25, (__bridge CFDictionaryRef)options);
+        }
+        scheduleRefresh();
         return;
     }
     if ([name isEqualToString:@"seek"]) {

@@ -60,6 +60,8 @@ struct MediaItem: Identifiable, Equatable {
     var isVideo: Bool
     /// Скорость воспроизведения (1 — обычная, 2 — видео на 2x).
     var rate: Double = 1
+    /// Повтор; nil — плеер его не поддерживает (кнопки нет).
+    var repeatMode: RepeatMode?
 
     func position(at date: Date) -> Double {
         guard isPlaying else { return elapsed }
@@ -72,6 +74,33 @@ struct MediaItem: Identifiable, Equatable {
             && lhs.duration == rhs.duration && lhs.elapsed == rhs.elapsed && lhs.timestamp == rhs.timestamp
             && lhs.isPlaying == rhs.isPlaying && lhs.artwork === rhs.artwork && lhs.backdrop === rhs.backdrop
             && lhs.sourceLabel == rhs.sourceLabel && lhs.isVideo == rhs.isVideo && lhs.rate == rhs.rate
+            && lhs.repeatMode == rhs.repeatMode
+    }
+}
+
+/// Режим повтора — те же номера, что у системного «Что играет».
+enum RepeatMode: Int, Sendable {
+    case off = 1
+    case one = 2
+    case all = 3
+
+    /// Порядок по нажатию: выкл → весь альбом/плейлист → один трек → выкл.
+    var next: RepeatMode {
+        switch self {
+        case .off: return .all
+        case .all: return .one
+        case .one: return .off
+        }
+    }
+
+    var symbol: String { self == .one ? "repeat.1" : "repeat" }
+
+    var help: String {
+        switch self {
+        case .off: return "Повтор выключен — нажми, чтобы повторять альбом или плейлист"
+        case .all: return "Повтор альбома/плейлиста — нажми, чтобы повторять один трек"
+        case .one: return "Повтор одного трека — нажми, чтобы выключить"
+        }
     }
 }
 
@@ -110,6 +139,7 @@ private struct MediaCandidate {
     var rate: Double = 1
     /// Пришёл из списка всех клиентов «Что играет» (а не от выбранного системой плеера).
     var fromClients = false
+    var repeatMode: RepeatMode?
 
     func position(at date: Date) -> Double {
         let value = elapsed + (isPlaying ? date.timeIntervalSince(elapsedTimestamp) * rate : 0)
@@ -219,6 +249,8 @@ final class NowPlayingService {
     /// Куда листали в последний раз — в ту сторону и уезжает старое название.
     private(set) var lastSkipDirection = 1
     @ObservationIgnored private var switchingFrom: [PlayerSource: String] = [:]
+    /// Только что переключили повтор — пока плеер не подтвердил, показываем выбранный режим.
+    @ObservationIgnored private var pendingRepeat: [PlayerSource: (mode: RepeatMode, until: Date)] = [:]
     @ObservationIgnored private var switchTimeouts: [PlayerSource: Task<Void, Never>] = [:]
     /// Почему последняя команда вкладке не сработала.
     @ObservationIgnored private var lastBrowserFailure: [PlayerSource: BrowserMediaSource.ControlResult] = [:]
@@ -542,6 +574,37 @@ final class NowPlayingService {
             send(forward ? .next : .previous, to: item.id)
             burstRefresh(item.id)
         }
+    }
+
+    /// Переключить повтор: выкл → альбом/плейлист → один трек. Spotify по AppleScript умеет только вкл/выкл.
+    func cycleRepeat(_ item: MediaItem) {
+        guard let current = item.repeatMode else { return }
+        var mode = current.next
+        if item.id == .spotify, mode == .one { mode = .off }
+        pendingRepeat[item.id] = (mode, Date().addingTimeInterval(2.5))
+        candidates[item.id]?.repeatMode = mode
+        recompute()
+        switch item.id {
+        case .music:
+            let name = mode == .off ? "off" : mode == .one ? "one" : "all"
+            runner.run("tell application id \"com.apple.Music\" to set song repeat to \(name)")
+        case .spotify:
+            runner.run("tell application id \"com.spotify.client\" to set repeating to \(mode != .off)")
+        case .system:
+            bridge.send("repeat \(mode.rawValue)")
+        case .browser:
+            break
+        }
+        scheduleRefresh()
+    }
+
+    /// Что сообщил плеер о повторе — с учётом только что нажатого (плеер подтверждает не сразу).
+    private func reportedRepeat(_ reported: RepeatMode?, for source: PlayerSource) -> RepeatMode? {
+        if let pending = pendingRepeat[source] {
+            if pending.until > Date(), reported != pending.mode { return pending.mode }
+            pendingRepeat[source] = nil
+        }
+        return reported
     }
 
     /// Карточка сразу «отпускает» текущий трек; как только придёт новый (или через 1,8 с) — обычный вид.
@@ -990,7 +1053,8 @@ final class NowPlayingService {
             sourceLabel: label,
             sourceIcon: icon,
             isVideo: isVideo,
-            rate: candidate.rate
+            rate: candidate.rate,
+            repeatMode: isVideo ? nil : candidate.repeatMode
         )
     }
 
@@ -1102,6 +1166,14 @@ final class NowPlayingService {
             timestamp: Date(),
             artworkKey: key
         )
+        let repeatMode: RepeatMode?
+        switch snapshot.repeatMode?.lowercased() {
+        case "one"?: repeatMode = .one
+        case "all"?, "true"?: repeatMode = .all
+        case "off"?, "false"?: repeatMode = .off
+        default: repeatMode = nil
+        }
+        candidates[player]?.repeatMode = reportedRepeat(repeatMode, for: player)
         recompute()
         if needsArtwork { loadArtwork(for: player, url: snapshot.artworkURL, key: key) }
     }
@@ -1197,6 +1269,7 @@ final class NowPlayingService {
             )
             if isNew { candidates[source]?.isLive = false }
             candidates[source]?.fromClients = true
+            candidates[source]?.repeatMode = reportedRepeat(client.repeatMode.flatMap(RepeatMode.init(rawValue:)), for: source)
             if let data = client.artwork {
                 candidates[source]?.artwork = freshArtwork(data, for: source, album: client.album, trackKey: key)
             } else if !client.hasArtwork {
@@ -1277,6 +1350,9 @@ final class NowPlayingService {
                 pid: info.pid > 0 ? info.pid : nil,
                 rate: info.rate
             )
+            // Браузерные вкладки повтор не поддерживают — кнопку для них не показываем.
+            let reported = source.browserKind == nil ? info.repeatMode.flatMap(RepeatMode.init(rawValue:)) : nil
+            candidates[source]?.repeatMode = reportedRepeat(reported, for: source)
             // Подтягиваем вкладку браузера, если её уже знаем из опроса.
             if let kind = source.browserKind, let tab = candidates[.browser(kind)], tab.track.title == info.title {
                 candidates[source]?.tabURL = tab.tabURL
@@ -1432,7 +1508,7 @@ final class NowPlayingService {
             tell application id "com.apple.Music"
                 if player state is stopped then return {"stopped"}
                 set t to current track
-                return {(player state as string), (name of t), (artist of t), (album of t), (duration of t), (player position)}
+                return {(player state as string), (name of t), (artist of t), (album of t), (duration of t), (player position), "", (song repeat as string)}
             end tell
             """
         case .spotify:
@@ -1440,7 +1516,7 @@ final class NowPlayingService {
             tell application id "com.spotify.client"
                 if player state is stopped then return {"stopped"}
                 set t to current track
-                return {(player state as string), (name of t), (artist of t), (album of t), ((duration of t) / 1000), (player position), (artwork url of t)}
+                return {(player state as string), (name of t), (artist of t), (album of t), ((duration of t) / 1000), (player position), (artwork url of t), (repeating as string)}
             end tell
             """
         case .browser, .system:

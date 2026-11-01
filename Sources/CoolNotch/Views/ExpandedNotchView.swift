@@ -37,6 +37,7 @@ struct ExpandedNotchView: View {
         case .shelf: ShelfView()
         case .clipboard: ClipboardView()
         case .notes: NotesView()
+        case .timer: TimerTabView()
         }
     }
 }

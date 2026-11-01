@@ -14,6 +14,8 @@ struct BridgeInfo: Sendable {
     var pid: Int32 = 0
     var artwork: Data?
     var hasArtwork = false
+    /// Повтор: 1 — выкл, 2 — один трек, 3 — всё; nil — плеер не сообщает.
+    var repeatMode: Int?
 }
 
 /// Плеер, который не выбран системой, но тоже сообщает, что играет.
@@ -29,6 +31,7 @@ struct BridgeClientInfo: Sendable {
     var timestamp: Double
     var artwork: Data?
     var hasArtwork: Bool
+    var repeatMode: Int?
 }
 
 enum BridgeEvent: Sendable {
@@ -210,6 +213,7 @@ private final class BridgeLineReader: @unchecked Sendable {
         var pid: Int32?
         var artwork: String?
         var hasArtwork: Bool?
+        var repeatMode: Int?
         var items: [Client]?
     }
 
@@ -225,6 +229,7 @@ private final class BridgeLineReader: @unchecked Sendable {
         var timestamp: Double?
         var artwork: String?
         var hasArtwork: Bool?
+        var repeatMode: Int?
     }
 
     private var buffer = Data()
@@ -266,7 +271,8 @@ private final class BridgeLineReader: @unchecked Sendable {
                     rate: client.rate ?? 0,
                     timestamp: client.timestamp ?? 0,
                     artwork: client.artwork.flatMap { Data(base64Encoded: $0) },
-                    hasArtwork: client.hasArtwork ?? false
+                    hasArtwork: client.hasArtwork ?? false,
+                    repeatMode: client.repeatMode
                 )
             })
         case "info":
@@ -283,7 +289,8 @@ private final class BridgeLineReader: @unchecked Sendable {
                 isPlaying: message.playing ?? false,
                 pid: message.pid ?? 0,
                 artwork: message.artwork.flatMap { Data(base64Encoded: $0) },
-                hasArtwork: message.hasArtwork ?? false
+                hasArtwork: message.hasArtwork ?? false,
+                repeatMode: message.repeatMode
             ))
         default:
             return nil

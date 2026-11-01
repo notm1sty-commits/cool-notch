@@ -25,16 +25,20 @@ struct HomeView: View {
             }
             .frame(maxWidth: .infinity)
             .animation(Theme.content, value: vm.nowPlaying.items.isEmpty)
-
-            // Таймер без своей плашки: тонкий разделитель и содержимое по тем же линиям, что и плеер.
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 1, height: cardHeight - 20)
-                .frame(height: cardHeight)
-
-            TimerCard()
-                .frame(width: 156, height: cardHeight)
         }
+    }
+}
+
+/// Таймер — отдельной вкладкой: на главной всё место отдано плееру.
+struct TimerTabView: View {
+    var body: some View {
+        HStack {
+            Spacer(minLength: 0)
+            TimerCard()
+                .frame(width: 260, height: Theme.playerHeight)
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -442,7 +446,26 @@ private struct MediaCard: View {
             controlButton(item.isVideo ? "goforward.10" : "forward.fill", help: item.isVideo ? "Вперёд на 10 секунд" : "Следующий трек") {
                 vm.nowPlaying.skip(item, forward: true)
             }
-            Spacer(minLength: 0)
+            if let mode = item.repeatMode {
+                Button {
+                    vm.nowPlaying.cycleRepeat(item)
+                } label: {
+                    Image(systemName: mode.symbol)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(mode == .off ? Color.white.opacity(0.4) : Color(nsColor: item.accent))
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(Color.white.opacity(mode == .off ? 0 : 0.1)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(PressableButtonStyle(scale: 0.8))
+                .help(mode.help)
+                .animation(Theme.micro, value: mode)
+                .transition(.opacity)
+            }
+            VolumeControl(volume: vm.volume, tint: Color(nsColor: item.accent))
+                .padding(.leading, 10)
+            Spacer(minLength: 8)
             Button {
                 vm.nowPlaying.open(item)
                 withAnimation(Theme.bouncy) { opened = true }
@@ -494,6 +517,66 @@ private struct MediaCard: View {
         }
         .buttonStyle(PressableButtonStyle(scale: 0.8))
         .help(help)
+    }
+}
+
+/// Громкость Мака: значок (нажми — без звука) и тонкий ползунок. Тянуть можно за любую точку.
+private struct VolumeControl: View {
+    let volume: SystemVolume
+    var tint: Color
+
+    @State private var hovering = false
+    @State private var dragging = false
+
+    private var symbol: String {
+        if volume.isMuted || volume.level < 0.01 { return "speaker.slash.fill" }
+        if volume.level < 0.34 { return "speaker.wave.1.fill" }
+        if volume.level < 0.67 { return "speaker.wave.2.fill" }
+        return "speaker.wave.3.fill"
+    }
+
+    var body: some View {
+        if volume.isAvailable {
+            HStack(spacing: 7) {
+                Button {
+                    volume.toggleMute()
+                } label: {
+                    Image(systemName: symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 20, height: 26, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableButtonStyle(scale: 0.85))
+                .help(volume.isMuted ? "Включить звук" : "Выключить звук")
+
+                GeometryReader { geo in
+                    let fraction = CGFloat(volume.isMuted ? 0 : volume.level)
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.16))
+                        Capsule()
+                            .fill(hovering || dragging ? tint : Color.white.opacity(0.85))
+                            .frame(width: max(0, geo.size.width * fraction))
+                    }
+                    .frame(height: hovering || dragging ? 6 : 4)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                dragging = true
+                                volume.set(Float(min(max(value.location.x / geo.size.width, 0), 1)))
+                            }
+                            .onEnded { _ in dragging = false }
+                    )
+                }
+                .frame(width: 84, height: 26)
+                .onHover { inside in withAnimation(Theme.micro) { hovering = inside } }
+                .animation(Theme.micro, value: hovering || dragging)
+                .help("Громкость Мака: \(Int((volume.isMuted ? 0 : volume.level) * 100))%")
+            }
+        }
     }
 }
 

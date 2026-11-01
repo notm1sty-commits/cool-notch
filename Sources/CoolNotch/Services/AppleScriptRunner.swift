@@ -9,6 +9,8 @@ struct PlayerSnapshot: Sendable {
     var duration: Double
     var position: Double
     var artworkURL: String?
+    /// Повтор как его называет плеер: Музыка — off/one/all, Spotify — true/false.
+    var repeatMode: String?
 }
 
 /// Выполняет AppleScript на отдельной очереди, чтобы не тормозить интерфейс.
@@ -82,7 +84,8 @@ final class AppleScriptRunner: @unchecked Sendable {
             album: text(4),
             duration: number(5),
             position: number(6),
-            artworkURL: count >= 7 ? d.atIndex(7)?.stringValue : nil
+            artworkURL: count >= 7 ? d.atIndex(7)?.stringValue.flatMap { $0.isEmpty ? nil : $0 } : nil,
+            repeatMode: count >= 8 ? d.atIndex(8)?.stringValue : nil
         )
     }
 }
