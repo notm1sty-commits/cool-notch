@@ -15,11 +15,14 @@ struct SpringValue {
     var value: Double
     var velocity: Double = 0
     var target: Double
+    /// Откуда начался текущий переход — чтобы отличать рост от сжатия.
+    var origin: Double
     var feel = SpringFeel(response: 0.5, damping: 0.8)
 
     init(_ value: Double) {
         self.value = value
         self.target = value
+        self.origin = value
     }
 
     /// Возвращает true, пока пружина ещё движется.
@@ -63,6 +66,9 @@ final class NotchMotion {
         /// Куда едет пружина — по отношению «сейчас / цель» содержимое повторяет колыхание плашки.
         var targetWidth: CGFloat
         var targetHeight: CGFloat
+        /// Откуда она поехала: содержимое колышется только когда плашка растёт.
+        var originWidth: CGFloat
+        var originHeight: CGFloat
     }
 
     enum Feel {
@@ -89,7 +95,9 @@ final class NotchMotion {
             heightVelocity: CGFloat(springs[1].velocity),
             isMoving: link != nil,
             targetWidth: CGFloat(springs[0].target),
-            targetHeight: CGFloat(springs[1].target)
+            targetHeight: CGFloat(springs[1].target),
+            originWidth: CGFloat(springs[0].origin),
+            originHeight: CGFloat(springs[1].origin)
         )
     }
 
@@ -97,6 +105,9 @@ final class NotchMotion {
         let feels = Self.feels(for: feel, reduced: reduced)
         let targets = [target.width, target.height, target.bottomRadius, target.shoulder]
         for index in springs.indices {
+            if springs[index].target != Double(targets[index]) {
+                springs[index].origin = springs[index].value
+            }
             springs[index].target = Double(targets[index])
             springs[index].feel = feels[index]
         }

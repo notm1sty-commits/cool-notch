@@ -146,13 +146,19 @@ final class NotchChrome {
         tintLayer.path = closed
         glassMask.path = closed
         contentMask.path = closed
-        // Содержимое колышется вместе с плашкой, когда та «выплёскивается» за итоговый размер
-        // (момент отскока пружины): масштаб = «текущий / целевой», только больше 1 и не больше +6 %.
+        // Содержимое колышется вместе с плашкой, когда та, вырастая, «выплёскивается» за итоговый
+        // размер (отскок пружины): масштаб = «текущий / целевой», только больше 1 и не больше +6 %.
         // Пока плашка только растёт к цели, содержимое не сжимаем — иначе оно дёргается.
+        // Когда плашка сжимается (ушёл курсор, закрылась всплывашка), содержимое стоит на месте:
+        // иначе в начале оно скачком увеличивается, а в конце, на отскоке пружины, дёргается.
         var cx: CGFloat = 1, cy: CGFloat = 1
-        if state.jelly, frame.targetWidth > 1, frame.targetHeight > 1 {
-            cx = min(max(g.width / frame.targetWidth, 1), 1.06)
-            cy = min(max(g.height / frame.targetHeight, 1), 1.06)
+        if state.jelly {
+            if frame.targetWidth > frame.originWidth + 0.5 {
+                cx = min(max(g.width / frame.targetWidth, 1), 1.06)
+            }
+            if frame.targetHeight > frame.originHeight + 0.5 {
+                cy = min(max(g.height / frame.targetHeight, 1), 1.06)
+            }
         }
         if let layer = contentContainer.layer {
             if abs(cx - 1) < 0.001 && abs(cy - 1) < 0.001 {
