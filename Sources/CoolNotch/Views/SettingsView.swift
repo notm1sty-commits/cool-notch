@@ -17,6 +17,8 @@ struct SettingsView: View {
     @AppStorage(Pref.haptics) var haptics = true
     @AppStorage(Pref.showMusicActivity) var showMusic = true
     @AppStorage(Pref.showChargingActivity) var showCharging = true
+    @AppStorage(Pref.showClockActivity) var showClock = true
+    @AppStorage(Pref.showShelfActivity) var showShelf = true
     @AppStorage(Pref.showLowBattery) var showLowBattery = true
     @AppStorage(Pref.trackBanners) var trackBanners = true
     @AppStorage(Pref.deviceBanners) var deviceBanners = true
@@ -79,6 +81,8 @@ struct SettingsView: View {
                     }
                     Section("Живые активности по бокам от выреза") {
                         Toggle("Музыка: обложка и эквалайзер", isOn: $showMusic)
+                        Toggle("Таймер и секундомер: время до конца и прошедшее", isOn: $showClock)
+                        Toggle("Полка: сколько файлов ждёт", isOn: $showShelf)
                         Toggle("Анимация при подключении зарядки", isOn: $showCharging)
                     }
                 case .look:

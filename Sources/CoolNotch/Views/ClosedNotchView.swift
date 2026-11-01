@@ -39,10 +39,19 @@ struct ClosedNotchView: View {
             TimerRing(progress: vm.timer.progress, color: Theme.orange, lineWidth: 2.4)
                 .frame(width: 15, height: 15)
                 .transition(earTransition)
+        case .stopwatch?:
+            Image(systemName: "stopwatch.fill")
+                .foregroundStyle(vm.stopwatch.isRunning ? Theme.liveGreen : Theme.secondaryText)
+                .transition(earTransition)
         case .charging?:
             Image(systemName: "bolt.fill")
                 .foregroundStyle(Theme.green)
                 .symbolEffect(.bounce, value: vm.pulse)
+                .transition(earTransition)
+        case .shelf?:
+            Image(systemName: "tray.full.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
                 .transition(earTransition)
         case nil:
             EmptyView()
@@ -66,6 +75,24 @@ struct ClosedNotchView: View {
                 .contentTransition(.numericText(countsDown: true))
                 .animation(Theme.micro, value: vm.timer.remainingText)
                 .foregroundStyle(vm.timer.state == .paused ? Theme.secondaryText : Theme.orange)
+                .transition(earTransition)
+        case .stopwatch?:
+            // Раз в секунду, пока идёт; на паузе — неподвижно и серым.
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(StopwatchService.shortFormat(vm.stopwatch.elapsed(at: context.date)))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
+                    .contentTransition(.numericText())
+                    .foregroundStyle(vm.stopwatch.isRunning ? Theme.liveGreen : Theme.secondaryText)
+            }
+            .transition(earTransition)
+        case .shelf?:
+            Text("\(vm.shelf.items.count)")
+                .monospacedDigit()
+                .contentTransition(.numericText())
+                .animation(Theme.micro, value: vm.shelf.items.count)
+                .foregroundStyle(.white.opacity(0.85))
                 .transition(earTransition)
         case .charging?:
             HStack(spacing: 6) {

@@ -59,6 +59,13 @@ final class StopwatchService {
         return result.reversed()
     }
 
+    /// Для свёрнутой чёлки: «4:07», больше часа — «1:04:07».
+    nonisolated static func shortFormat(_ seconds: TimeInterval) -> String {
+        let whole = Int(max(0, seconds))
+        let h = whole / 3600, m = (whole % 3600) / 60, s = whole % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, s) : String(format: "%d:%02d", m, s)
+    }
+
     /// «04:07,32» до часа, дальше «1:04:07».
     nonisolated static func format(_ seconds: TimeInterval) -> String {
         let value = max(0, seconds)

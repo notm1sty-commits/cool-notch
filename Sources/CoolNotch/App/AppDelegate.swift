@@ -16,7 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Настройки на момент открытия окна — для кнопки «Отмена».
     private var settingsSnapshot: [String: Any] = [:]
     private static let settingsKeys = [
-        Pref.hoverDelay, Pref.haptics, Pref.showMusicActivity, Pref.showChargingActivity, Pref.showLowBattery,
+        Pref.hoverDelay, Pref.haptics, Pref.showMusicActivity, Pref.showChargingActivity, Pref.showClockActivity, Pref.showShelfActivity, Pref.showLowBattery,
         Pref.trackBanners, Pref.deviceBanners, Pref.browserMusic, Pref.systemNowPlaying, Pref.systemNotifications,
         Pref.notchStyle, Pref.fx3D, Pref.fxJelly, Pref.glassTint, Pref.screenshotsInHistory, Pref.autoCheckUpdates,
         Pref.betaUpdates, Pref.clipboardHistory, Pref.openOnFileDrag, Pref.timerSound, "appColorOverrides",

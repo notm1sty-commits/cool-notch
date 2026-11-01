@@ -7,7 +7,10 @@ import UniformTypeIdentifiers
 enum LiveActivity: Equatable {
     case music
     case timer
+    case stopwatch
     case charging
+    /// На полке лежат файлы.
+    case shelf
 }
 
 /// Уведомление, которое «выезжает» из чёлки и через пару секунд прячется обратно.
@@ -428,10 +431,15 @@ final class NotchViewModel {
         return .closed
     }
 
+    /// Что показать по бокам свёрнутой чёлки. Важнее то, что идёт сейчас и ограничено во времени:
+    /// зарядка → таймер → секундомер → музыка → файлы на полке.
     var activity: LiveActivity? {
         if isChargingFlash { return .charging }
-        if timer.isActive { return .timer }
+        let clock = Pref.bool(Pref.showClockActivity)
+        if clock, timer.isActive { return .timer }
+        if clock, stopwatch.hasTime { return .stopwatch }
         if Pref.bool(Pref.showMusicActivity), nowPlaying.isPlaying, nowPlaying.track != nil { return .music }
+        if Pref.bool(Pref.showShelfActivity), !shelf.items.isEmpty { return .shelf }
         return nil
     }
 
@@ -441,7 +449,10 @@ final class NotchViewModel {
         switch activity {
         case .music: return notchSize.height + 6
         case .timer: return 64
+        // Больше часа — «1:02:03», нужно место пошире.
+        case .stopwatch: return stopwatch.elapsed() >= 3600 ? 80 : 64
         case .charging: return 84
+        case .shelf: return notchSize.height + 10
         }
     }
 
@@ -619,6 +630,12 @@ final class NotchViewModel {
         if pinned { isPinned = true }
         guard !isOpen else { return }
         deckIndex = 0
+        // Свёрнутая чёлка показывала таймер, секундомер или полку — раскрываем сразу на нужной вкладке.
+        switch activity {
+        case .timer?, .stopwatch?: tab = .clock
+        case .shelf?: tab = .shelf
+        default: break
+        }
         bannerTask?.cancel()
         bannerQueue.removeAll()
         banner = nil

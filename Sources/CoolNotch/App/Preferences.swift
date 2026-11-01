@@ -6,6 +6,8 @@ enum Pref {
     static let haptics = "haptics"
     static let showMusicActivity = "showMusicActivity"
     static let showChargingActivity = "showChargingActivity"
+    static let showClockActivity = "showClockActivity"
+    static let showShelfActivity = "showShelfActivity"
     static let showLowBattery = "showLowBattery"
     static let trackBanners = "trackBanners"
     static let deviceBanners = "deviceBanners"
@@ -32,6 +34,8 @@ enum Pref {
             haptics: true,
             showMusicActivity: true,
             showChargingActivity: true,
+            showClockActivity: true,
+            showShelfActivity: true,
             showLowBattery: true,
             trackBanners: true,
             deviceBanners: true,
