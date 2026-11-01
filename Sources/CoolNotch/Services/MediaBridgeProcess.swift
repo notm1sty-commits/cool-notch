@@ -16,9 +16,26 @@ struct BridgeInfo: Sendable {
     var hasArtwork = false
 }
 
+/// Плеер, который не выбран системой, но тоже сообщает, что играет.
+struct BridgeClientInfo: Sendable {
+    var bundleID: String
+    var pid: Int32
+    var title: String
+    var artist: String
+    var album: String
+    var duration: Double
+    var elapsed: Double
+    var rate: Double
+    var timestamp: Double
+    var artwork: Data?
+    var hasArtwork: Bool
+}
+
 enum BridgeEvent: Sendable {
     case ready
     case info(BridgeInfo)
+    /// Все приложения, которые сообщают о воспроизведении (не только выбранное системой).
+    case clients([BridgeClientInfo])
     case stopped
 }
 
@@ -34,6 +51,11 @@ final class MediaBridgeProcess {
     private(set) var lastError: String?
     /// Сколько раз подряд пришлось перезапускать помощник.
     var restarts: Int { restartCount }
+    /// Читает ли помощник всех клиентов «Что играет». Выключается сам, если в этом режиме он падал.
+    var readsAllClients: Bool { !UserDefaults.standard.bool(forKey: Self.allClientsDisabledKey) }
+    static let allClientsDisabledKey = "bridgeAllClientsDisabled"
+    private var launchedAt = Date()
+    private var launchedWithAllClients = false
 
     private var process: Process?
     private var inputHandle: FileHandle?
@@ -85,6 +107,13 @@ final class MediaBridgeProcess {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
         process.arguments = [resources.script.path, resources.library.path]
+        // Режим «все плееры» — через закрытые функции MediaRemote. Если помощник в нём упадёт,
+        // processExited() выключит режим, и дальше всё работает как раньше (только выбранный плеер).
+        var environment = ProcessInfo.processInfo.environment
+        launchedWithAllClients = readsAllClients
+        if launchedWithAllClients { environment["COOLNOTCH_ALL_CLIENTS"] = "1" }
+        process.environment = environment
+        launchedAt = Date()
         let output = Pipe()
         let input = Pipe()
         process.standardOutput = output
@@ -144,6 +173,16 @@ final class MediaBridgeProcess {
         outputPipe = nil
         onEvent?(.stopped)
 
+        // Упал вскоре после запуска в режиме «все плееры» — выключаем этот режим навсегда.
+        if isEnabled, launchedWithAllClients, Date().timeIntervalSince(launchedAt) < 20 {
+            UserDefaults.standard.set(true, forKey: Self.allClientsDisabledKey)
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                self?.launch()
+            }
+            return
+        }
+
         // Упал — пробуем перезапустить с нарастающей паузой, но не бесконечно.
         guard isEnabled, restartCount < 4 else { return }
         restartCount += 1
@@ -169,6 +208,21 @@ private final class BridgeLineReader: @unchecked Sendable {
         var timestamp: Double?
         var playing: Bool?
         var pid: Int32?
+        var artwork: String?
+        var hasArtwork: Bool?
+        var items: [Client]?
+    }
+
+    private struct Client: Decodable {
+        var bundle: String
+        var pid: Int32?
+        var title: String?
+        var artist: String?
+        var album: String?
+        var duration: Double?
+        var elapsed: Double?
+        var rate: Double?
+        var timestamp: Double?
         var artwork: String?
         var hasArtwork: Bool?
     }
@@ -199,6 +253,22 @@ private final class BridgeLineReader: @unchecked Sendable {
         switch message.type {
         case "ready":
             return .ready
+        case "clients":
+            return .clients((message.items ?? []).map { client in
+                BridgeClientInfo(
+                    bundleID: client.bundle,
+                    pid: client.pid ?? 0,
+                    title: client.title ?? "",
+                    artist: client.artist ?? "",
+                    album: client.album ?? "",
+                    duration: client.duration ?? 0,
+                    elapsed: client.elapsed ?? 0,
+                    rate: client.rate ?? 0,
+                    timestamp: client.timestamp ?? 0,
+                    artwork: client.artwork.flatMap { Data(base64Encoded: $0) },
+                    hasArtwork: client.hasArtwork ?? false
+                )
+            })
         case "info":
             if message.empty ?? true { return .info(BridgeInfo(isEmpty: true)) }
             return .info(BridgeInfo(

@@ -98,13 +98,7 @@ struct SettingsView: View {
                     Section("Музыка") {
                         Toggle("Любой плеер через системный «Что играет»", isOn: $systemNowPlaying)
                         if systemNowPlaying, let nowPlaying {
-                            LabeledContent("Сейчас видит") {
-                                Text(nowPlaying.systemStatus)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .font(.caption)
+                            PlayerDiagnosticsRow(nowPlaying: nowPlaying)
                         }
                         Text("Показывает трек из любого приложения — Яндекс Музыки, браузера, Spotify. Работает через небольшой помощник, который запускается в системном perl: так macOS отдаёт эти данные. Если что-то не так — выключи, и чёлка вернётся к Spotify, Музыке и браузеру.")
                             .font(.caption)
@@ -464,5 +458,58 @@ private struct ShowcaseSection: View {
                 }
             }
         }
+    }
+}
+
+/// Что видит системный «Что играет»: текст целиком, его можно выделить или скопировать кнопкой.
+private struct PlayerDiagnosticsRow: View {
+    let nowPlaying: NowPlayingService
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Главный плеер в системе")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button(copied ? "Скопировано" : "Скопировать") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(report, forType: .string)
+                    copied = true
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .seconds(1.5))
+                        copied = false
+                    }
+                }
+                .controlSize(.small)
+            }
+            Text(nowPlaying.systemStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if nowPlaying.readsAllPlayers {
+                Text("Сообщают о воспроизведении: \(nowPlaying.otherPlayersStatus ?? "ждём данные…")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else {
+                Text("Режим «все плееры» выключен: помощник в нём сбоил, поэтому видно только главный плеер.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var report: String {
+        var lines = ["Главный плеер: \(nowPlaying.systemStatus)"]
+        if nowPlaying.readsAllPlayers {
+            lines.append("Сообщают о воспроизведении: \(nowPlaying.otherPlayersStatus ?? "нет данных")")
+        } else {
+            lines.append("Режим «все плееры» выключен после сбоя")
+        }
+        return lines.joined(separator: "\n")
     }
 }

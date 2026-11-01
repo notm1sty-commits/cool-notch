@@ -12,6 +12,8 @@
 
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -21,6 +23,11 @@ typedef void (*MRGetPIDFn)(dispatch_queue_t, void (^)(int));
 typedef void (*MRRegisterFn)(dispatch_queue_t);
 typedef Boolean (*MRSendCommandFn)(int, CFDictionaryRef);
 typedef void (*MRSetElapsedTimeFn)(double);
+// Чтение всех клиентов «Что играет», а не только выбранного системой
+// (см. github.com/ungive/mediaremote-adapter/issues/41 — так же вызывается и там).
+typedef void (*MRGetClientsFn)(dispatch_queue_t, void (^)(CFArrayRef));
+typedef void *(*MRGetLocalOriginFn)(void);
+typedef void (*MRGetInfoForPlayerFn)(id, void *, dispatch_queue_t, void (^)(NSDictionary *, NSError *));
 
 static MRGetNowPlayingInfoFn gGetInfo = NULL;
 static MRGetIsPlayingFn gGetIsPlaying = NULL;
@@ -28,6 +35,15 @@ static MRGetPIDFn gGetPID = NULL;
 static MRRegisterFn gRegister = NULL;
 static MRSendCommandFn gSendCommand = NULL;
 static MRSetElapsedTimeFn gSetElapsed = NULL;
+static MRGetClientsFn gGetClients = NULL;
+static MRGetLocalOriginFn gGetLocalOrigin = NULL;
+static MRGetInfoForPlayerFn gGetInfoForPlayer = NULL;
+/// Включается переменной окружения COOLNOTCH_ALL_CLIENTS=1. Если в этом режиме помощник
+/// упадёт, Cool Notch перезапустит его без неё (см. MediaBridgeProcess).
+static BOOL gAllClients = NO;
+static BOOL gClientsInFlight = NO;
+static CFAbsoluteTime gClientsStarted = 0;
+static NSMutableDictionary<NSString *, NSString *> *gClientArtworkKeys = nil;
 
 static NSString *gLastArtworkKey = nil;
 static BOOL gRefreshScheduled = NO;
@@ -97,6 +113,118 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
     }
 
     emitJSON(out);
+}
+
+/// Данные одного клиента (не выбранного системой плеера) для сообщения "clients".
+static NSDictionary *clientPayload(NSDictionary *info, NSString *bundle, NSNumber *pid) {
+    NSString *title = stringValue(info[@"kMRMediaRemoteNowPlayingInfoTitle"]);
+    if (title.length == 0) {
+        return nil;
+    }
+    NSString *artist = stringValue(info[@"kMRMediaRemoteNowPlayingInfoArtist"]);
+    NSString *album = stringValue(info[@"kMRMediaRemoteNowPlayingInfoAlbum"]);
+    id timestamp = info[@"kMRMediaRemoteNowPlayingInfoTimestamp"];
+    double time = [timestamp isKindOfClass:[NSDate class]]
+        ? [(NSDate *)timestamp timeIntervalSince1970]
+        : [[NSDate date] timeIntervalSince1970];
+
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    out[@"bundle"] = bundle;
+    out[@"pid"] = pid ?: @0;
+    out[@"title"] = title;
+    out[@"artist"] = artist;
+    out[@"album"] = album;
+    out[@"duration"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoDuration"]));
+    out[@"elapsed"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"]));
+    out[@"rate"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]));
+    out[@"timestamp"] = @(time);
+
+    id artwork = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
+    if ([artwork isKindOfClass:[NSData class]] && [(NSData *)artwork length] > 0) {
+        NSData *artworkData = (NSData *)artwork;
+        out[@"hasArtwork"] = @YES;
+        NSString *key = [NSString stringWithFormat:@"%@|%@|%@|%lu", title, artist, album, (unsigned long)artworkData.length];
+        if (![key isEqualToString:gClientArtworkKeys[bundle]]) {
+            gClientArtworkKeys[bundle] = key;
+            out[@"artwork"] = [artworkData base64EncodedStringWithOptions:0];
+        }
+    } else {
+        out[@"hasArtwork"] = @NO;
+        [gClientArtworkKeys removeObjectForKey:bundle];
+    }
+    return out;
+}
+
+/// Все приложения, которые сейчас сообщают системе о воспроизведении. macOS отдаёт команды
+/// только выбранному, но прочитать можно каждое — так чёлка видит, например, Яндекс Музыку,
+/// даже когда «главным» система считает браузер.
+static void refreshClients(void) {
+    if (!gAllClients || gGetClients == NULL || gGetLocalOrigin == NULL || gGetInfoForPlayer == NULL) {
+        return;
+    }
+    // Предыдущий запрос ещё идёт — ждём, но не дольше 4 секунд (вдруг MediaRemote не ответил).
+    if (gClientsInFlight && CFAbsoluteTimeGetCurrent() - gClientsStarted < 4) {
+        return;
+    }
+    Class pathClass = NSClassFromString(@"MRPlayerPath");
+    SEL initSelector = NSSelectorFromString(@"initWithOrigin:client:player:");
+    if (pathClass == Nil || ![pathClass instancesRespondToSelector:initSelector]) {
+        return;
+    }
+    gClientsInFlight = YES;
+    gClientsStarted = CFAbsoluteTimeGetCurrent();
+    dispatch_queue_t queue = dispatch_get_main_queue();
+    gGetClients(queue, ^(CFArrayRef raw) {
+        NSArray *clients = raw != NULL ? [(__bridge NSArray *)raw copy] : @[];
+        id origin = (__bridge id)gGetLocalOrigin();
+        NSMutableArray *items = [NSMutableArray array];
+        dispatch_group_t group = dispatch_group_create();
+
+        for (id client in clients) {
+            if (![client respondsToSelector:@selector(bundleIdentifier)]) {
+                continue;
+            }
+            id bundle = [client valueForKey:@"bundleIdentifier"];
+            if (![bundle isKindOfClass:[NSString class]] || [(NSString *)bundle length] == 0) {
+                continue;
+            }
+            NSNumber *pid = @0;
+            if ([client respondsToSelector:@selector(processIdentifier)]) {
+                id value = [client valueForKey:@"processIdentifier"];
+                if ([value isKindOfClass:[NSNumber class]]) {
+                    pid = value;
+                }
+            }
+            id path = ((id (*)(id, SEL, id, id, id))objc_msgSend)([pathClass alloc], initSelector, origin, client, nil);
+            if (path == nil) {
+                continue;
+            }
+            dispatch_group_enter(group);
+            gGetInfoForPlayer(path, NULL, queue, ^(NSDictionary *info, NSError *error) {
+                (void)error;
+                if ([info isKindOfClass:[NSDictionary class]] && info.count > 0) {
+                    NSDictionary *item = clientPayload(info, (NSString *)bundle, pid);
+                    if (item != nil) {
+                        [items addObject:item];
+                    }
+                }
+                dispatch_group_leave(group);
+            });
+        }
+
+        // Если кто-то из клиентов не ответил за 2 секунды — отправляем то, что есть.
+        __block BOOL sent = NO;
+        void (^send)(void) = ^{
+            if (sent) {
+                return;
+            }
+            sent = YES;
+            gClientsInFlight = NO;
+            emitJSON(@{ @"type": @"clients", @"items": [items copy] });
+        };
+        dispatch_group_notify(group, queue, send);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), queue, send);
+    });
 }
 
 static void scheduleRefresh(void);
@@ -169,6 +297,7 @@ static void refreshNow(void) {
     gRefreshInFlight = YES;
     gRefreshStarted = now;
     performRefresh(0);
+    refreshClients();
 }
 
 static void scheduleRefresh(void) {
@@ -254,6 +383,9 @@ static void loadMediaRemote(void) {
     gRegister = (MRRegisterFn)dlsym(handle, "MRMediaRemoteRegisterForNowPlayingNotifications");
     gSendCommand = (MRSendCommandFn)dlsym(handle, "MRMediaRemoteSendCommand");
     gSetElapsed = (MRSetElapsedTimeFn)dlsym(handle, "MRMediaRemoteSetElapsedTime");
+    gGetClients = (MRGetClientsFn)dlsym(handle, "MRMediaRemoteGetNowPlayingClients");
+    gGetLocalOrigin = (MRGetLocalOriginFn)dlsym(handle, "MRMediaRemoteGetLocalOrigin");
+    gGetInfoForPlayer = (MRGetInfoForPlayerFn)dlsym(handle, "MRMediaRemoteGetNowPlayingInfoForPlayer");
 }
 
 /// Точка входа. Вызывается из perl как XSUB, поэтому принимает (интерпретатор, CV) и не использует их.
@@ -263,6 +395,9 @@ void coolnotch_bridge_run(void *interpreter, void *cv) {
     (void)cv;
 
     @autoreleasepool {
+        const char *allClients = getenv("COOLNOTCH_ALL_CLIENTS");
+        gAllClients = allClients != NULL && strcmp(allClients, "1") == 0;
+        gClientArtworkKeys = [NSMutableDictionary dictionary];
         loadMediaRemote();
         if (gRegister != NULL) {
             gRegister(dispatch_get_main_queue());
@@ -284,7 +419,7 @@ void coolnotch_bridge_run(void *interpreter, void *cv) {
         }
 
         // Страховка на случай, если какое-то уведомление не пришло.
-        NSTimer *timer = [NSTimer timerWithTimeInterval:5 repeats:YES block:^(NSTimer *t) {
+        NSTimer *timer = [NSTimer timerWithTimeInterval:(gAllClients ? 3 : 5) repeats:YES block:^(NSTimer *t) {
             (void)t;
             refreshNow();
         }];

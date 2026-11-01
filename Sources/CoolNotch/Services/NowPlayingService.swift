@@ -108,6 +108,8 @@ private struct MediaCandidate {
     var lastUpdate = Date()
     /// Скорость воспроизведения: на 2x время в чёлке идёт вдвое быстрее.
     var rate: Double = 1
+    /// Пришёл из списка всех клиентов «Что играет» (а не от выбранного системой плеера).
+    var fromClients = false
 
     func position(at date: Date) -> Double {
         let value = elapsed + (isPlaying ? date.timeIntervalSince(elapsedTimestamp) * rate : 0)
@@ -187,6 +189,9 @@ final class NowPlayingService {
     private(set) var items: [MediaItem] = []
     /// Что сейчас видит системный «Что играет» — для строки диагностики в настройках.
     private(set) var systemStatus = "Ждём данные…"
+    /// Какие приложения вообще сообщают о воспроизведении (режим «все плееры»).
+    private(set) var otherPlayersStatus: String?
+    var readsAllPlayers: Bool { bridge.readsAllClients }
 
     @ObservationIgnored var onTrackChange: (@MainActor (NowPlayingTrack) -> Void)?
     /// Почему не получилось управлять карточкой — показывается прямо на ней.
@@ -1032,10 +1037,64 @@ final class NowPlayingService {
         recompute()
     }
 
+    /// Все плееры, которые сообщают о воспроизведении, — не только выбранный системой.
+    /// Так видно, например, Яндекс Музыку, даже когда «главным» macOS считает браузер.
+    private func applyClients(_ clients: [BridgeClientInfo]) {
+        var seen = Set<PlayerSource>()
+        var changed = false
+        for client in clients {
+            var bundleID = client.bundleID
+            if bundleID.hasPrefix("com.apple.WebKit") { bundleID = BrowserKind.safari.bundleID }
+            guard bundleID != Bundle.main.bundleIdentifier else { continue }
+            let source = PlayerSource.system(bundleID)
+            seen.insert(source)
+            // Выбранный системой плеер приходит отдельным, более точным сообщением.
+            if candidates[source]?.isLive == true { continue }
+            let key = "client|\(client.title)|\(client.artist)|\(client.album)"
+            let isNew = candidates[source] == nil
+            let artworkChanged = upsert(
+                source,
+                track: NowPlayingTrack(title: client.title, artist: client.artist, album: client.album, duration: client.duration),
+                playing: client.rate > 0,
+                elapsed: client.elapsed,
+                timestamp: client.timestamp > 0 ? Date(timeIntervalSince1970: client.timestamp) : Date(),
+                artworkKey: key,
+                pid: client.pid > 0 ? client.pid : nil,
+                rate: client.rate
+            )
+            if isNew { candidates[source]?.isLive = false }
+            candidates[source]?.fromClients = true
+            if let data = client.artwork {
+                candidates[source]?.artwork = NSImage(data: data)
+            } else if !client.hasArtwork {
+                candidates[source]?.artwork = nil
+            } else if artworkChanged {
+                candidates[source]?.artwork = nil
+            }
+            changed = true
+        }
+        // Клиент пропал из списка (плеер закрыли или он перестал сообщать о треке) — убираем.
+        let gone = candidates.values.filter { $0.fromClients && !$0.isLive && !seen.contains($0.source) }.map(\.source)
+        for source in gone {
+            candidates.removeValue(forKey: source)
+            controlIssues[source] = nil
+            changed = true
+        }
+        let names = clients.map { client in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: client.bundleID)
+                .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+                ?? client.bundleID
+        }
+        otherPlayersStatus = names.isEmpty ? "никого" : names.joined(separator: ", ")
+        if changed { recompute() }
+    }
+
     private func applyBridge(_ event: BridgeEvent) {
         guard !isDemo else { return }
         let systemSources = candidates.keys.filter { if case .system = $0 { return true } else { return false } }
         switch event {
+        case .clients(let clients):
+            applyClients(clients)
         case .ready:
             systemStatus = "Помощник запущен, ждём трек…"
         case .stopped:
