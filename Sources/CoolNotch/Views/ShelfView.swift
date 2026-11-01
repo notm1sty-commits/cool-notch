@@ -58,9 +58,10 @@ private struct DropHint: View {
         ZStack {
             RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .strokeBorder(
-                    Color.white.opacity(active ? 0.5 : (hovering ? 0.28 : 0.14)),
+                    Color.white.opacity(active ? 0.55 : (hovering ? 0.28 : 0.14)),
                     style: StrokeStyle(lineWidth: 1, dash: [5, 5])
                 )
+                .padding(0.5)
             PlaceholderView(
                 title: active ? "Отпускай" : (hovering ? "Нажми, чтобы выбрать файлы" : "Перетащи файлы на чёлку"),
                 subtitle: hovering && !active ? "или перетащи их сюда — подождут, пока не понадобятся" : "Они подождут здесь, пока не понадобятся",
@@ -72,9 +73,9 @@ private struct DropHint: View {
                     .contentTransition(.symbolEffect(.replace))
             }
         }
-        .scaleEffect(active ? 1.02 : 1)
-        .animation(Theme.hover, value: active)
-        .animation(Theme.micro, value: hovering)
+        // Без масштаба: раньше рамка увеличивалась и вылезала за фон блока, а пружина дёргалась.
+        .animation(.easeOut(duration: 0.15), value: active)
+        .animation(.easeOut(duration: 0.15), value: hovering)
     }
 }
 
