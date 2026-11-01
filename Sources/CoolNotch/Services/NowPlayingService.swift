@@ -370,7 +370,9 @@ final class NowPlayingService {
             browser.focusTab(in: kind, title: candidate?.tabTitle ?? item.title, url: candidate?.tabURL)
             return
         }
-        if let pid = candidate?.pid, let app = NSRunningApplication(processIdentifier: pid) {
+        // Основное приложение по bundle ID (звук мог прийти от вспомогательного процесса), затем по PID.
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: item.id.bundleID).first
+            ?? candidate?.pid.flatMap({ NSRunningApplication(processIdentifier: $0) }) {
             app.activate()
             return
         }
@@ -598,7 +600,8 @@ final class NowPlayingService {
 
         if source != chosen.source {
             source = chosen.source
-            let info = chosen.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+            let info = NSRunningApplication.runningApplications(withBundleIdentifier: chosen.source.bundleID).first
+                ?? chosen.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
             let fallback = appInfo(for: chosen.source.bundleID)
             sourceName = info?.localizedName ?? fallback.name
             sourceIcon = info?.icon ?? fallback.icon
@@ -637,7 +640,8 @@ final class NowPlayingService {
     ]
 
     private func makeItem(_ candidate: MediaCandidate) -> MediaItem {
-        let running = candidate.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: candidate.source.bundleID).first
+            ?? candidate.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
         let info = appInfo(for: candidate.source.bundleID)
         let appName = running?.localizedName ?? (info.name.isEmpty ? "Плеер" : info.name)
         let icon = running?.icon ?? info.icon
@@ -838,22 +842,23 @@ final class NowPlayingService {
         case .ready:
             systemStatus = "Помощник запущен, ждём трек…"
         case .stopped:
-            systemStatus = "Помощник остановлен"
+            let reason = bridge.lastError.map { ": \($0)" } ?? ""
+            systemStatus = "Помощник остановлен (перезапусков: \(bridge.restarts))\(reason)"
             systemSources.forEach(removeCandidate)
         case .info(let info):
             if info.isEmpty {
-                systemStatus = "Сейчас ничего не играет"
+                systemStatus = "macOS сообщает: сейчас ничего не играет"
             } else {
-                let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid)?.localizedName : nil
-                systemStatus = "\(app ?? "Плеер"): \(info.title)\(info.isPlaying ? "" : " (пауза)")"
+                let identity = Self.appIdentity(pid: info.pid)
+                let who = identity.map { "\($0.name) (\($0.bundleID))" } ?? "PID \(info.pid)"
+                systemStatus = "\(who): \(info.title)\(info.isPlaying ? "" : " — пауза")"
             }
             guard !info.isEmpty else {
                 // Источник закрылся (вкладка, плеер) — убираем только живой, запомненные оставляем.
                 systemSources.filter { candidates[$0]?.isLive != false }.forEach(removeCandidate)
                 return
             }
-            let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid) : nil
-            var bundleID = app?.bundleIdentifier ?? ""
+            var bundleID = Self.appIdentity(pid: info.pid)?.bundleID ?? ""
             // Звук из Safari иногда приходит от процесса WebKit — это всё равно Safari.
             if bundleID.hasPrefix("com.apple.WebKit") { bundleID = BrowserKind.safari.bundleID }
             let source = PlayerSource.system(bundleID)
@@ -895,6 +900,35 @@ final class NowPlayingService {
             }
             recompute()
         }
+    }
+
+    /// Приложение, которому принадлежит процесс. Звук часто идёт от вспомогательного процесса
+    /// (у Electron-приложений вроде Яндекс Музыки — «… Helper.app» внутри основного), поэтому
+    /// поднимаемся до самого внешнего .app — это и есть плеер, который нужно показать и открыть.
+    static func appIdentity(pid: Int32) -> (bundleID: String, name: String)? {
+        guard pid > 0 else { return nil }
+        var path = NSRunningApplication(processIdentifier: pid)?.bundleURL?.path
+        if path == nil {
+            var buffer = [CChar](repeating: 0, count: 4096)
+            if proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 {
+                path = String(cString: buffer)
+            }
+        }
+        guard let path else { return nil }
+        let outer: String
+        if let range = path.range(of: ".app/") {
+            outer = String(path[..<range.lowerBound]) + ".app"
+        } else if path.hasSuffix(".app") {
+            outer = path
+        } else {
+            let app = NSRunningApplication(processIdentifier: pid)
+            guard let bundleID = app?.bundleIdentifier else { return nil }
+            return (bundleID, app?.localizedName ?? bundleID)
+        }
+        let url = URL(fileURLWithPath: outer)
+        guard let bundleID = Bundle(url: url)?.bundleIdentifier else { return nil }
+        let name = FileManager.default.displayName(atPath: outer).replacingOccurrences(of: ".app", with: "")
+        return (bundleID, name)
     }
 
     private func scheduleSettle() {

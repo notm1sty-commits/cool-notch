@@ -98,6 +98,33 @@ final class ClipboardService {
         entries.removeAll()
     }
 
+    /// Кнопка «Проверить»: сразу перечитать буфер и поискать свежие скриншоты,
+    /// не дожидаясь очередного тихого опроса.
+    func checkNow() {
+        if pasteboard.changeCount != lastChangeCount {
+            lastChangeCount = pasteboard.changeCount
+            if isEnabled { capture() }
+        }
+        guard isEnabled, Pref.bool(Pref.screenshotsInHistory) else { return }
+        updateScreenshotWatching()
+        scanScreenshots(delay: .zero)
+        // Spotlight мог уже найти снимок, а уведомление ещё не пришло — смотрим его результаты.
+        if let query = screenshotQuery {
+            query.disableUpdates()
+            let recent: [(String, Date)] = (0..<query.resultCount).compactMap { index in
+                guard let item = query.result(at: index) as? NSMetadataItem,
+                      let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
+                      let created = item.value(forAttribute: NSMetadataItemFSCreationDateKey) as? Date,
+                      Date().timeIntervalSince(created) < 120 else { return nil }
+                return (path, created)
+            }
+            query.enableUpdates()
+            for (path, created) in recent {
+                addScreenshot(URL(fileURLWithPath: path), created: created)
+            }
+        }
+    }
+
     private func poll() {
         guard !SystemState.screensAsleep else { return }
         let enabled = Pref.bool(Pref.clipboardHistory)

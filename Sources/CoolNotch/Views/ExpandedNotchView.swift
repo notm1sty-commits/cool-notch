@@ -24,8 +24,8 @@ struct ExpandedNotchView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, Theme.padding)
-            .padding(.top, 12)
-            .padding(.bottom, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 14)
         }
         .foregroundStyle(.white)
     }

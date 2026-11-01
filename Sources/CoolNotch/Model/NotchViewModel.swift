@@ -403,7 +403,8 @@ final class NotchViewModel {
     }
 
     var openSize: CGSize {
-        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + 206)
+        // Высота подогнана под содержимое плеера (обложка, текст, прогресс, кнопки) без пустых полей.
+        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + 180)
     }
 
     var shapeSize: CGSize {

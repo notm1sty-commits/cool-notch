@@ -30,6 +30,10 @@ final class MediaBridgeProcess {
     private(set) var isRunning = false
     /// Включён ли помощник (даже если сейчас перезапускается или сдался после сбоев).
     private(set) var isEnabled = false
+    /// Последняя строка ошибки от perl — для диагностики в настройках.
+    private(set) var lastError: String?
+    /// Сколько раз подряд пришлось перезапускать помощник.
+    var restarts: Int { restartCount }
 
     private var process: Process?
     private var inputHandle: FileHandle?
@@ -85,7 +89,20 @@ final class MediaBridgeProcess {
         let input = Pipe()
         process.standardOutput = output
         process.standardInput = input
-        process.standardError = FileHandle.nullDevice
+        let errors = Pipe()
+        process.standardError = errors
+        errors.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                return
+            }
+            let text = String(decoding: data, as: UTF8.self)
+                .split(whereSeparator: \.isNewline).last.map(String.init)?
+                .trimmingCharacters(in: .whitespaces)
+            guard let text, !text.isEmpty else { return }
+            Task { @MainActor in self?.lastError = String(text.prefix(200)) }
+        }
 
         let reader = BridgeLineReader { [weak self] event in
             self?.received(event)

@@ -5,7 +5,7 @@ struct HomeView: View {
 
     var body: some View {
         GeometryReader { geo in
-            content(cardHeight: max(100, geo.size.height - 16))
+            content(cardHeight: max(100, geo.size.height - 14))
         }
     }
 
@@ -27,8 +27,14 @@ struct HomeView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(Theme.content, value: vm.nowPlaying.items.isEmpty)
 
+            // Таймер без своей плашки: тонкий разделитель и содержимое по тем же линиям, что и плеер.
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 1, height: cardHeight - 20)
+                .frame(height: cardHeight)
+
             TimerCard()
-                .frame(width: 172, height: cardHeight)
+                .frame(width: 156, height: cardHeight)
         }
     }
 }
@@ -50,7 +56,7 @@ private struct MediaDeck: View {
         let depth = vm.fx3D && !reduceMotion && !vm.lowPower
         GeometryReader { geo in
             let cardWidth = max(220, geo.size.width - 100)
-            let cardHeight = max(100, geo.size.height - 16)
+            let cardHeight = max(100, geo.size.height - 14)
             VStack(spacing: 4) {
                 ZStack {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -649,9 +655,8 @@ private struct TimerCard: View {
                 .buttonStyle(PressableButtonStyle(scale: 0.94))
             }
         }
-        .padding(13)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glass(Theme.cardRadius)
         .animation(Theme.content, value: timer.isActive)
     }
 
