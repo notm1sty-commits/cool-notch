@@ -383,7 +383,7 @@ final class NotchViewModel {
         switch activity {
         case .music: return notchSize.height + 6
         case .timer: return 64
-        case .charging: return 76
+        case .charging: return 84
         }
     }
 
@@ -399,15 +399,16 @@ final class NotchViewModel {
 
     var bannerSize: CGSize {
         if case .airpods? = banner?.kind {
-            return CGSize(width: max(notchSize.width + 300, 480), height: notchSize.height + 72)
+            return CGSize(width: openSize.width, height: notchSize.height + 72)
         }
         let extra: CGFloat = (banner?.expanded == true ? 18 : 0) + (banner?.source != nil ? 15 : 0)
-        return CGSize(width: max(notchSize.width + 270, 456), height: notchSize.height + 62 + extra)
+        // Та же ширина, что у раскрытой чёлки — баннеры и панель выглядят одним целым.
+        return CGSize(width: openSize.width, height: notchSize.height + 62 + extra)
     }
 
     var openSize: CGSize {
         // Высота подогнана под содержимое плеера (обложка, текст, прогресс, кнопки) без пустых полей.
-        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + Theme.playerHeight + 36)
+        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + Theme.playerHeight + 42)
     }
 
     var shapeSize: CGSize {

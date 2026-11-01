@@ -56,7 +56,7 @@ private struct MediaDeck: View {
         GeometryReader { geo in
             let cardWidth = max(220, geo.size.width - 100)
             let cardHeight = Theme.playerHeight
-            VStack(spacing: 4) {
+            VStack(spacing: 10) {
                 ZStack {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         MediaCard(item: item, depth: depth)

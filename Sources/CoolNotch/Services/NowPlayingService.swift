@@ -218,6 +218,8 @@ final class NowPlayingService {
     /// Какой трек мы уже объявляли для каждого источника: баннер только при настоящей смене
     /// трека, а не когда macOS переключает «главный» плеер туда-сюда.
     @ObservationIgnored private var announced: [PlayerSource: String] = [:]
+    @ObservationIgnored private var lastAnnouncedTitle = ""
+    @ObservationIgnored private var lastAnnouncedAt = Date.distantPast
     /// Какая картинка пришла с каким треком — чтобы распознать «залипшую» обложку.
     @ObservationIgnored private var artworkFingerprints: [PlayerSource: (hash: Int, track: String, album: String)] = [:]
     @ObservationIgnored private var pending: [PlayerSource: PendingPlayback] = [:]
@@ -768,12 +770,15 @@ final class NowPlayingService {
             if case .system = key { return nil }
             return key.bundleID
         })
-        let visible = candidates.values.filter { candidate in
+        var visible = candidates.values.filter { candidate in
             if case .system(let id) = candidate.source {
                 return candidate.isLive || !directBundles.contains(id)
             }
             return !liveSystemBundles.contains(candidate.source.bundleID)
         }
+        // Один и тот же трек из списка всех плееров и от главного плеера — одна карточка.
+        let liveTracks = Set(visible.filter { !$0.fromClients || $0.isLive }.map { Self.trackIdentity($0.track) })
+        visible.removeAll { $0.fromClients && !$0.isLive && liveTracks.contains(Self.trackIdentity($0.track)) }
         let latest: (MediaCandidate, MediaCandidate) -> Bool = { $0.lastActivity < $1.lastActivity }
         let chosen = visible.filter(\.isPlaying).max(by: latest) ?? visible.max(by: latest)
 
@@ -820,7 +825,13 @@ final class NowPlayingService {
             // Когда macOS перекидывает «главный» плеер между уже знакомыми треками — молчим.
             let isNew = announced[chosen.source] != key
             announced[chosen.source] = key
-            if isNew, chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
+            // Плееры часто присылают новый трек в два приёма (сначала название, потом исполнитель):
+            // то же название в течение 10 секунд второй раз не объявляем.
+            let title = chosen.track.title.lowercased()
+            let repeated = title == lastAnnouncedTitle && Date().timeIntervalSince(lastAnnouncedAt) < 10
+            if isNew, !repeated, chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
+                lastAnnouncedTitle = title
+                lastAnnouncedAt = Date()
                 onTrackChange?(chosen.track)
             }
         }
@@ -1064,7 +1075,9 @@ final class NowPlayingService {
         var seen = Set<PlayerSource>()
         var changed = false
         for client in clients {
-            var bundleID = client.bundleID
+            // Тот же способ, что и для главного плеера: вспомогательный процесс → основное приложение.
+            // Иначе одно приложение могло прийти под двумя идентификаторами и стать двумя карточками.
+            var bundleID = (client.pid > 0 ? Self.appIdentity(pid: client.pid)?.bundleID : nil) ?? client.bundleID
             if bundleID.hasPrefix("com.apple.WebKit") { bundleID = BrowserKind.safari.bundleID }
             guard bundleID != Bundle.main.bundleIdentifier else { continue }
             let source = PlayerSource.system(bundleID)
@@ -1179,6 +1192,10 @@ final class NowPlayingService {
             }
             recompute()
         }
+    }
+
+    private static func trackIdentity(_ track: NowPlayingTrack) -> String {
+        "\(track.title.lowercased())|\(track.artist.lowercased())"
     }
 
     /// Приложение, которому принадлежит процесс. Звук часто идёт от вспомогательного процесса

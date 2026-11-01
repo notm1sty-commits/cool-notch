@@ -7,11 +7,14 @@ struct ClosedNotchView: View {
     var body: some View {
         let ear = max(0, (vm.closedSize.width - vm.notchSize.width) / 2)
         HStack(spacing: 0) {
+            // Содержимое «ушей» не прижимается к вырезу: отступ со стороны чёлки.
             ZStack { leading }
+                .padding(.trailing, 8)
                 .frame(width: ear, height: vm.notchSize.height)
             Color.clear
                 .frame(width: vm.notchSize.width)
             ZStack { trailing }
+                .padding(.leading, 8)
                 .frame(width: ear, height: vm.notchSize.height)
         }
         .frame(height: vm.notchSize.height)
@@ -239,7 +242,7 @@ struct AirPodsCard: View {
             Color.clear.frame(height: vm.notchSize.height)
             HStack(spacing: 12) {
                 Image(systemName: deviceSymbol)
-                    .font(.system(size: 26, weight: .regular))
+                    .font(.system(size: 17, weight: .regular))
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(.white)
                     .frame(width: 44, height: 44)
