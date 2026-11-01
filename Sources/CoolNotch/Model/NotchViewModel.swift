@@ -7,7 +7,10 @@ import UniformTypeIdentifiers
 enum LiveActivity: Equatable {
     case music
     case timer
+    case stopwatch
     case charging
+    /// На полке лежат файлы.
+    case shelf
 }
 
 /// Уведомление, которое «выезжает» из чёлки и через пару секунд прячется обратно.
@@ -17,6 +20,8 @@ struct NotchBanner: Identifiable, Equatable {
         case artwork
         /// Иконка приложения по bundle id.
         case app(String)
+        /// Батарейка с заданной заполненностью (0…1) — для уведомлений о низком заряде.
+        case battery(Double)
     }
 
     enum Action: Equatable {
@@ -30,6 +35,8 @@ struct NotchBanner: Identifiable, Equatable {
 
     enum Kind: Equatable {
         case standard
+        /// «Сейчас играет»: одна живая всплывашка, которая берёт трек из устоявшегося снимка.
+        case nowPlaying
         /// Большая карточка «наушники подключены» с зарядом.
         case airpods(name: String, levels: AirPodsLevels?)
     }
@@ -46,10 +53,13 @@ struct NotchBanner: Identifiable, Equatable {
     var kind: Kind = .standard
     /// Пробежать свечением по контуру при появлении.
     var glows = false
+    /// Название приложения для уведомлений — показывается сверху, как на iPhone, вместе со временем.
+    var source: String?
+    var date = Date()
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
-    case home, shelf, clipboard, notes
+    case home, shelf, clipboard, notes, clock
 
     var id: String { rawValue }
 
@@ -59,6 +69,7 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .shelf: return "tray.full.fill"
         case .clipboard: return "doc.on.clipboard.fill"
         case .notes: return "note.text"
+        case .clock: return "clock.fill"
         }
     }
 
@@ -67,7 +78,8 @@ enum NotchTab: String, CaseIterable, Identifiable {
         case .home: return "Главная"
         case .shelf: return "Полка"
         case .clipboard: return "Буфер обмена"
-        case .notes: return "Заметка"
+        case .notes: return "Быстрые заметки"
+        case .clock: return "Часы"
         }
     }
 
@@ -99,14 +111,11 @@ final class NotchViewModel {
 
     // Оформление (зеркало настроек, чтобы интерфейс сразу реагировал)
     private(set) var glassStyle = true
-    private(set) var fxEdgeGlow = true
     private(set) var fx3D = true
     private(set) var fxJelly = true
     private(set) var glassTint: Double = 0.6
 
     /// Свечение контура: меняется счётчик — пробегает новая волна.
-    private(set) var glowTrigger = 0
-    private(set) var glowGreen = false
 
     /// Какая карточка карусели плеера сейчас выбрана.
     private(set) var deckIndex = 0
@@ -122,6 +131,9 @@ final class NotchViewModel {
     let clipboard: ClipboardService
     let notes: NotesStore
     let timer: TimerService
+    let stopwatch: StopwatchService
+    /// Громкость Мака — ползунок в плеере.
+    let volume: SystemVolume
     let audio: AudioOutputMonitor
     let notifications: NotificationMirror
     let updates: UpdateService
@@ -132,7 +144,6 @@ final class NotchViewModel {
     @ObservationIgnored var onClose: (@MainActor () -> Void)?
     @ObservationIgnored var openSettings: (@MainActor () -> Void)?
     /// Разовые эффекты оболочки (свечение, блик) — их рисует Core Animation.
-    @ObservationIgnored var onChromeEvent: (@MainActor (ChromeEvent) -> Void)?
     /// Попросить окно принять ввод с клавиатуры (заметки, таймер).
     @ObservationIgnored var onRequestKeyboard: (@MainActor () -> Void)?
     @ObservationIgnored private var isPinned = false
@@ -145,7 +156,6 @@ final class NotchViewModel {
     @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
     @ObservationIgnored private var lastPresentationKind = 0
     @ObservationIgnored private var lastHovering = false
-    @ObservationIgnored private var browserHintShown: Set<BrowserKind> = []
 
     init() {
         motion = NotchMotion()
@@ -155,6 +165,8 @@ final class NotchViewModel {
         clipboard = ClipboardService()
         notes = NotesStore()
         timer = TimerService()
+        stopwatch = StopwatchService()
+        volume = SystemVolume()
         audio = AudioOutputMonitor()
         notifications = NotificationMirror()
         updates = UpdateService()
@@ -176,13 +188,7 @@ final class NotchViewModel {
         }
         battery.onLowBattery = { [weak self] in
             guard let self, Pref.bool(Pref.showLowBattery) else { return }
-            self.post(NotchBanner(
-                icon: .symbol("battery.25percent"),
-                tint: .red,
-                title: "Низкий заряд",
-                subtitle: "Осталось \(self.battery.level)% — пора на зарядку",
-                duration: 5
-            ))
+            self.showLowBattery(level: self.battery.level)
         }
         timer.onFinish = { [weak self] minutes in
             self?.post(NotchBanner(
@@ -193,31 +199,8 @@ final class NotchViewModel {
                 duration: 6
             ))
         }
-        nowPlaying.onBrowserControlUnavailable = { [weak self] kind in
-            guard let self, !self.browserHintShown.contains(kind) else { return }
-            self.browserHintShown.insert(kind)
-            let menu = kind == .safari
-                ? "меню «Разработка» → «Разрешить JavaScript из Apple Events»"
-                : "меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events»"
-            self.post(NotchBanner(
-                icon: .app(kind.bundleID),
-                tint: .white,
-                title: "Открыл вкладку — нажми там ⏯",
-                subtitle: "Чтобы управлять видео прямо из чёлки, пока играет музыка, включи в браузере \(menu).",
-                duration: 8,
-                expanded: true
-            ))
-        }
-        nowPlaying.onTrackChange = { [weak self] track in
-            guard let self, Pref.bool(Pref.trackBanners), !self.isOpen else { return }
-            self.post(NotchBanner(
-                icon: .artwork,
-                tint: self.nowPlaying.accent,
-                title: track.title,
-                subtitle: track.artist.isEmpty ? self.nowPlaying.sourceName : track.artist,
-                duration: 3.2,
-                action: .openSource
-            ))
+        nowPlaying.onTrackChange = { [weak self] _ in
+            self?.announceNowPlaying()
         }
         audio.onChange = { [weak self] device, previous in
             self?.audioDeviceChanged(device, previous: previous)
@@ -238,6 +221,9 @@ final class NotchViewModel {
         reloadPrefs()
         motion.jump(to: targetGeometry)
         observeGeometry()
+        observeNowPlaying()
+        lastShelfCount = shelf.items.count
+        observeLiveStates()
 
         powerObserver = NotificationCenter.default.addObserver(
             forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main
@@ -255,8 +241,6 @@ final class NotchViewModel {
     func reloadPrefs() {
         let glass = UserDefaults.standard.string(forKey: Pref.notchStyle) != "black"
         if glass != glassStyle { glassStyle = glass }
-        let edge = Pref.bool(Pref.fxEdgeGlow)
-        if edge != fxEdgeGlow { fxEdgeGlow = edge }
         let depth = Pref.bool(Pref.fx3D)
         if depth != fx3D { fx3D = depth }
         let jelly = Pref.bool(Pref.fxJelly)
@@ -273,7 +257,6 @@ final class NotchViewModel {
             open: isOpen,
             glassStyle: glassStyle,
             glassTint: CGFloat(glassTint),
-            edgeEffects: fxEdgeGlow && !reduced,
             jelly: fxJelly && !reduced,
             notchSize: notchSize
         )
@@ -300,13 +283,96 @@ final class NotchViewModel {
         glassStyle && presentation != .closed
     }
 
-    func glow(green: Bool) {
-        glowGreen = green
-        glowTrigger += 1
-        onChromeEvent?(.glow(green: green))
-    }
 
     // MARK: Media deck
+
+    /// Низкий заряд: 20 %, 10 % и 5 % — одна и та же всплывашка с процентом, с каждой ступенью
+    /// строже: оранжевая подложка, затем красная и почти пустая батарея.
+    func showLowBattery(level: Int) {
+        let red = Color(red: 1, green: 0.27, blue: 0.23)
+        if level <= 5 {
+            post(NotchBanner(
+                icon: .battery(0),
+                tint: red,
+                title: "Критический заряд · \(level)%",
+                subtitle: "Mac скоро выключится — подключи зарядку",
+                duration: 7
+            ))
+        } else if level <= 10 {
+            post(NotchBanner(
+                icon: .battery(0.12),
+                tint: red,
+                title: "Очень низкий заряд · \(level)%",
+                subtitle: "Подключи зарядку",
+                duration: 6
+            ))
+        } else {
+            post(NotchBanner(
+                icon: .battery(0.25),
+                tint: Color(red: 1, green: 0.62, blue: 0.04),
+                title: "Низкий заряд · \(level)%",
+                subtitle: "Самое время подключить зарядку",
+                duration: 5
+            ))
+        }
+    }
+
+    /// «+» на полке: выбрать файлы в окне Finder, они лягут на полку (оттуда их можно перетащить куда угодно).
+    func pickFilesForShelf() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.prompt = "Добавить на полку"
+        panel.message = "Выбери файлы — они подождут на полке в чёлке"
+        NSApp.activate()
+        panel.begin { [weak self] response in
+            guard let self, response == .OK, !panel.urls.isEmpty else { return }
+            withAnimation(Theme.content) { self.shelf.add(panel.urls) }
+            // Показываем полку с новыми файлами; клик мимо чёлки её закроет.
+            self.select(.shelf)
+            self.open(pinned: true)
+        }
+    }
+
+    /// «+» у AirDrop: выбрать файлы и сразу отправить их по AirDrop.
+    func pickFilesForAirDrop() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.prompt = "Отправить по AirDrop"
+        panel.message = "Выбери, что отправить по AirDrop"
+        NSApp.activate()
+        panel.begin { response in
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            ShelfStore.airDrop(panel.urls)
+        }
+    }
+
+    /// Свайп по чёлке — сквозное перелистывание: на «Главной» сначала карточки плеера,
+    /// а за последней (или перед первой) — соседние разделы: Главная → Полка → Буфер → Заметки.
+    func swipe(next: Bool) {
+        let step = next ? 1 : -1
+        if tab == .home {
+            let target = deckIndex + step
+            if target >= 0, target < nowPlaying.items.count {
+                selectDeck(target)
+                swipeFeedback()
+                return
+            }
+        }
+        let tabs = NotchTab.allCases
+        guard let index = tabs.firstIndex(of: tab), tabs.indices.contains(index + step) else { return }
+        withAnimation(Theme.content) { select(tabs[index + step]) }
+        swipeFeedback()
+    }
+
+    private func swipeFeedback() {
+        if Pref.bool(Pref.haptics) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
 
     func selectDeck(_ index: Int) {
         let clamped = min(max(index, 0), max(nowPlaying.items.count - 1, 0))
@@ -367,11 +433,99 @@ final class NotchViewModel {
         return .closed
     }
 
+    /// Что показать по бокам свёрнутой чёлки. Важнее то, что идёт сейчас и ограничено во времени:
+    /// зарядка → таймер → секундомер → музыка → файлы на полке.
     var activity: LiveActivity? {
         if isChargingFlash { return .charging }
-        if timer.isActive { return .timer }
+        // Постоянно видно только то, что идёт сейчас: идущие таймер и секундомер, играющая музыка.
+        // Пауза и полка — несколько секунд после изменения, потом прячутся.
+        let clock = Pref.bool(Pref.showClockActivity)
+        if clock, timer.state == .running { return .timer }
+        if clock, stopwatch.isRunning { return .stopwatch }
+        if clock, clockFlash {
+            if timer.state == .paused { return .timer }
+            if stopwatch.hasTime { return .stopwatch }
+        }
         if Pref.bool(Pref.showMusicActivity), nowPlaying.isPlaying, nowPlaying.track != nil { return .music }
+        if Pref.bool(Pref.showShelfActivity), shelfFlash, !shelf.items.isEmpty { return .shelf }
         return nil
+    }
+
+    /// Таймер или секундомер только что поставили на паузу — показываем это несколько секунд.
+    private(set) var clockFlash = false
+    /// На полке изменилось число файлов — показываем, сколько их, несколько секунд.
+    private(set) var shelfFlash = false
+    @ObservationIgnored private var clockFlashTask: Task<Void, Never>?
+    @ObservationIgnored private var shelfFlashTask: Task<Void, Never>?
+    /// Изменилось, пока чёлка была открыта, — покажем, когда она свернётся.
+    @ObservationIgnored private var clockFlashPending = false
+    @ObservationIgnored private var shelfFlashPending = false
+    @ObservationIgnored private var lastShelfCount = 0
+    @ObservationIgnored private var lastTimerState = TimerService.State.idle
+    @ObservationIgnored private var lastStopwatchRunning = false
+    private static let flashDuration: Duration = .seconds(4)
+
+    private func observeLiveStates() {
+        withObservationTracking {
+            _ = shelf.items.count
+            _ = timer.state
+            _ = stopwatch.isRunning
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.liveStatesChanged()
+                self?.observeLiveStates()
+            }
+        }
+    }
+
+    private func liveStatesChanged() {
+        let count = shelf.items.count
+        if count != lastShelfCount {
+            lastShelfCount = count
+            if count == 0 {
+                shelfFlashPending = false
+                hideShelfFlash()
+            } else if isOpen {
+                shelfFlashPending = true
+            } else {
+                flashShelf()
+            }
+        }
+        var paused = false
+        if timer.state != lastTimerState {
+            paused = timer.state == .paused
+            lastTimerState = timer.state
+        }
+        if stopwatch.isRunning != lastStopwatchRunning {
+            paused = paused || (!stopwatch.isRunning && stopwatch.hasTime)
+            lastStopwatchRunning = stopwatch.isRunning
+        }
+        if paused {
+            if isOpen { clockFlashPending = true } else { flashClock() }
+        }
+    }
+
+    private func flashClock() {
+        clockFlash = true
+        clockFlashTask?.cancel()
+        clockFlashTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.flashDuration) } catch { return }
+            self?.clockFlash = false
+        }
+    }
+
+    private func flashShelf() {
+        shelfFlash = true
+        shelfFlashTask?.cancel()
+        shelfFlashTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.flashDuration) } catch { return }
+            self?.shelfFlash = false
+        }
+    }
+
+    private func hideShelfFlash() {
+        shelfFlashTask?.cancel()
+        if shelfFlash { shelfFlash = false }
     }
 
     /// Ширина «ушка» слева и справа от выреза.
@@ -380,7 +534,10 @@ final class NotchViewModel {
         switch activity {
         case .music: return notchSize.height + 6
         case .timer: return 64
-        case .charging: return 56
+        // Больше часа — «1:02:03», нужно место пошире.
+        case .stopwatch: return stopwatch.elapsed() >= 3600 ? 80 : 64
+        case .charging: return 84
+        case .shelf: return notchSize.height + 10
         }
     }
 
@@ -394,16 +551,48 @@ final class NotchViewModel {
         return size
     }
 
-    var bannerSize: CGSize {
-        if case .airpods? = banner?.kind {
-            return CGSize(width: max(notchSize.width + 250, 440), height: notchSize.height + 150)
+    /// Сколько занимает содержимое текущей всплывашки (оно меряет себя само, см. BannerContentHeight).
+    var bannerContentHeight: CGFloat?
+    /// Когда появилась текущая всплывашка — пока она проявляется, наведение её не раскрывает.
+    @ObservationIgnored private var bannerShownAt = Date.distantPast
+
+    /// Естественная ширина строки текущей всплывашки (меряет себя сама, см. BannerIdealWidth).
+    var bannerContentWidth: CGFloat?
+
+    /// Всплывашка обнимает содержимое: строка + по 20 pt с боков, без пустого чёрного по краям.
+    /// Не уже выреза с запасом и не шире раскрытой чёлки (длинный текст обрежется многоточием).
+    private var bannerWidth: CGFloat {
+        // Карточка наушников: ширина по числу колец заряда — без замеров, чтобы не «сжималась»,
+        // пока заряд ещё грузится.
+        if case .airpods(_, let levels)? = banner?.kind {
+            let rings = [levels?.left, levels?.right, levels?.caseLevel, levels?.left == nil ? levels?.single : nil]
+                .compactMap { $0 }.count
+            let batteries = rings == 0 ? 20 : CGFloat(rings) * 30 + CGFloat(rings - 1) * 12
+            // 16 + значок 44 + 12 + текст ~150 + 10 + кольца + 16
+            return max(notchSize.width + 24, 248 + batteries)
         }
-        let extra: CGFloat = banner?.expanded == true ? 18 : 0
-        return CGSize(width: max(notchSize.width + 270, 456), height: notchSize.height + 62 + extra)
+        // Не уже выреза (с небольшим запасом), чтобы короткое название не давало широких полей.
+        let minimum = notchSize.width + 24
+        let maximum = openSize.width - 40
+        let fallback: CGFloat = 380
+        let natural = (bannerContentWidth ?? fallback) + BannerContentHeight.sideGap * 2
+        return min(max(natural, minimum), maximum)
+    }
+
+    var bannerSize: CGSize {
+        // Пока содержимое не измерено — близкая оценка, потом форма подстроится точно.
+        let estimate: CGFloat
+        if case .airpods? = banner?.kind {
+            estimate = 70
+        } else {
+            estimate = 70 + (banner?.expanded == true ? 16 : 0) + (banner?.source != nil ? 14 : 0)
+        }
+        return CGSize(width: bannerWidth, height: notchSize.height + (bannerContentHeight ?? estimate))
     }
 
     var openSize: CGSize {
-        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + 206)
+        // Высота подогнана под содержимое плеера (обложка, текст, прогресс, кнопки) без пустых полей.
+        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + Theme.playerHeight + 35)
     }
 
     var shapeSize: CGSize {
@@ -462,12 +651,21 @@ final class NotchViewModel {
         closeTask?.cancel()
         closeTask = nil
 
-        // Курсор на уведомлении — держим его, чтобы можно было прочитать и нажать.
+        // Курсор на всплывашке: держим её (можно прочитать и нажать), а если курсор задержался —
+        // раскрываем чёлку, как обычно. Быстрый клик успевает раньше и открывает уведомление.
         if banner != nil, !isOpen, !fileDrag {
             bannerTask?.cancel()
             bannerTask = nil
-            openTask?.cancel()
-            openTask = nil
+            guard openTask == nil else { return }
+            // Лок: раскрываем не раньше, чем закончится анимация появления всплывашки.
+            let appearDone = bannerShownAt.addingTimeInterval(0.9).timeIntervalSinceNow
+            let delay = max(0.5, Pref.double(Pref.hoverDelay), appearDone)
+            openTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                guard !Task.isCancelled else { return }
+                self?.openTask = nil
+                self?.open()
+            }
             return
         }
 
@@ -517,6 +715,12 @@ final class NotchViewModel {
         if pinned { isPinned = true }
         guard !isOpen else { return }
         deckIndex = 0
+        // Свёрнутая чёлка показывала таймер, секундомер или полку — раскрываем сразу на нужной вкладке.
+        switch activity {
+        case .timer?, .stopwatch?: tab = .clock
+        case .shelf?: tab = .shelf
+        default: break
+        }
         bannerTask?.cancel()
         bannerQueue.removeAll()
         banner = nil
@@ -536,6 +740,15 @@ final class NotchViewModel {
         isOpen = false
         isTyping = false
         isDropTargeted = false
+        // Что изменилось, пока чёлка была открыта (положили файл, поставили на паузу), — коротко покажем.
+        if shelfFlashPending {
+            shelfFlashPending = false
+            flashShelf()
+        }
+        if clockFlashPending {
+            clockFlashPending = false
+            flashClock()
+        }
         onClose?()
     }
 
@@ -551,9 +764,106 @@ final class NotchViewModel {
         }
     }
 
+    // MARK: Now playing banner
+
+    /// Трек, который показывает всплывашка «Сейчас играет». Обновляется только когда данные
+    /// «устоялись» (~0,2 с без изменений), и всё сразу — название, исполнитель и обложка.
+    /// Поэтому при быстром переключении треков всплывашка не собирает кусочки разных треков.
+    struct NowPlayingSnapshot: Equatable {
+        var title: String
+        /// Исполнитель, а если его нет — альбом.
+        var detail: String
+        var artwork: NSImage?
+        var isVideo: Bool
+        var appName: String
+        var appColor: NSColor
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.title == rhs.title && lhs.detail == rhs.detail && lhs.artwork === rhs.artwork
+                && lhs.isVideo == rhs.isVideo && lhs.appName == rhs.appName && lhs.appColor == rhs.appColor
+        }
+    }
+
+    private(set) var nowPlayingSnapshot: NowPlayingSnapshot?
+    @ObservationIgnored private var snapshotTask: Task<Void, Never>?
+    @ObservationIgnored private var announceTask: Task<Void, Never>?
+
+    private func currentSnapshot() -> NowPlayingSnapshot? {
+        guard let track = nowPlaying.track else { return nil }
+        let bundleID = nowPlaying.source?.bundleID ?? ""
+        return NowPlayingSnapshot(
+            title: track.title,
+            detail: track.artist.isEmpty ? track.album : track.artist,
+            artwork: nowPlaying.artwork,
+            isVideo: nowPlaying.items.first?.isVideo == true,
+            appName: nowPlaying.sourceName,
+            appColor: AppColorCache.color(for: bundleID, icon: nowPlaying.sourceIcon)
+        )
+    }
+
+    private func observeNowPlaying() {
+        withObservationTracking {
+            _ = nowPlaying.track
+            _ = nowPlaying.artwork
+            _ = nowPlaying.sourceName
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.nowPlayingChanged()
+                self?.observeNowPlaying()
+            }
+        }
+    }
+
+    private func nowPlayingChanged() {
+        snapshotTask?.cancel()
+        snapshotTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard let self, !Task.isCancelled else { return }
+            let fresh = self.currentSnapshot()
+            if fresh != self.nowPlayingSnapshot { self.nowPlayingSnapshot = fresh }
+        }
+    }
+
+    /// Новый трек: показать «Сейчас играет» — или, если она уже на экране (быстро листают треки),
+    /// просто обновить её и продлить, а не выпускать новую следом.
+    private func announceNowPlaying() {
+        guard Pref.bool(Pref.trackBanners), !isOpen else { return }
+        announceTask?.cancel()
+        announceTask = Task { @MainActor [weak self] in
+            // Плееры присылают трек по кусочкам (название, потом исполнитель, потом обложка) — чуть ждём.
+            try? await Task.sleep(for: .milliseconds(260))
+            guard let self, !Task.isCancelled, !self.isOpen else { return }
+            self.snapshotTask?.cancel()
+            self.nowPlayingSnapshot = self.currentSnapshot()
+            if self.banner?.kind == .nowPlaying {
+                self.extendBanner(by: 3.2)
+                return
+            }
+            if self.bannerQueue.contains(where: { $0.kind == .nowPlaying }) { return }
+            self.post(NotchBanner(
+                icon: .artwork,
+                tint: .white,
+                title: self.nowPlayingSnapshot?.title ?? "",
+                duration: 3.2,
+                action: .openSource,
+                kind: .nowPlaying
+            ))
+        }
+    }
+
+    private func extendBanner(by seconds: TimeInterval) {
+        bannerTask?.cancel()
+        bannerTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+            self?.dismissBanner()
+        }
+    }
+
     private func show(_ newBanner: NotchBanner) {
+        bannerContentHeight = nil
+        bannerContentWidth = nil
+        bannerShownAt = Date()
         banner = newBanner
-        if newBanner.glows { glow(green: false) }
         bannerTask?.cancel()
         bannerTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(newBanner.duration)) } catch { return }
@@ -582,7 +892,6 @@ final class NotchViewModel {
     func flashCharging() {
         isChargingFlash = true
         pulse += 1
-        glow(green: true)
         chargingTask?.cancel()
         chargingTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(3.5)) } catch { return }
@@ -592,6 +901,9 @@ final class NotchViewModel {
 
     /// Нажатие на уведомление в чёлке.
     func performBannerAction(_ banner: NotchBanner) {
+        // Кликнули — не раскрываем чёлку следом.
+        openTask?.cancel()
+        openTask = nil
         dismissBanner()
         switch banner.action {
         case .openNotch:
@@ -600,6 +912,7 @@ final class NotchViewModel {
             nowPlaying.openSourceApp()
         case .installUpdate:
             updates.install()
+            UserDefaults.standard.set(SettingsPage.updates.rawValue, forKey: "settingsPage")
             openSettings?()
         case .openApp(let bundleID):
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
@@ -614,7 +927,9 @@ final class NotchViewModel {
         let appName = NSWorkspace.shared.urlForApplication(withBundleIdentifier: notification.bundleID)
             .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? ""
         let title = notification.title.isEmpty ? appName : notification.title
-        let text = [notification.subtitle, notification.body].filter { !$0.isEmpty }.joined(separator: " — ")
+        var text = [notification.subtitle, notification.body].filter { !$0.isEmpty }.joined(separator: " — ")
+        // Совсем без текста (приложение спрятало содержимое) — всё равно показываем, от кого.
+        if text.isEmpty && !appName.isEmpty { text = "Новое уведомление" }
         guard !title.isEmpty || !text.isEmpty else { return }
         post(NotchBanner(
             icon: .app(notification.bundleID),
@@ -624,7 +939,8 @@ final class NotchViewModel {
             duration: 5,
             action: .openApp(notification.bundleID),
             expanded: text.count > 44,
-            glows: true
+            source: appName.isEmpty ? nil : appName,
+            date: notification.date
         ))
     }
 
@@ -639,7 +955,8 @@ final class NotchViewModel {
                 title: previous.name,
                 subtitle: "Отключено · звук через динамики Mac"
             ))
-        } else if device.name.localizedCaseInsensitiveContains("airpods") || device.name.localizedCaseInsensitiveContains("beats") {
+        } else if device.isWireless {
+            // Любые беспроводные наушники и колонки — одна карточка; заряд, если устройство его сообщает.
             showAirPods(name: device.name)
         } else {
             post(NotchBanner(
@@ -665,8 +982,8 @@ final class NotchViewModel {
         post(card)
         guard levels == nil else { return }
         AirPodsBattery.fetch(deviceName: name) { [weak self] levels in
-            guard let self, let levels else { return }
-            self.updateBanner(card.id) { $0.kind = .airpods(name: name, levels: levels) }
+            // Заряда нет — убираем ожидание, карточка просто скажет «Подключено».
+            self?.updateBanner(card.id) { $0.kind = .airpods(name: name, levels: levels ?? AirPodsLevels()) }
         }
     }
 
@@ -726,5 +1043,83 @@ enum FileDropLoader {
             let urls = collector.urls
             MainActor.assumeIsolated { completion(urls) }
         }
+    }
+}
+
+/// Цвет приложения для подписи «Сейчас играет · Приложение». По умолчанию — средний цвет
+/// иконки, посчитанный один раз и запомненный в настройках. Пользователь может задать свой
+/// цвет в настройках («Плеер» → «Цвета приложений») или сбросить всё.
+@MainActor
+enum AppColorCache {
+    private static let key = "appIconColors"
+    private static let overridesKey = "appColorOverrides"
+    private static var memory: [String: NSColor] = [:]
+
+    static func color(for bundleID: String, icon: NSImage?) -> NSColor {
+        if let custom = stored(overridesKey)[bundleID] { return custom }
+        if let cached = memory[bundleID] { return cached }
+        if let saved = stored(key)[bundleID] {
+            memory[bundleID] = saved
+            return saved
+        }
+        guard !bundleID.isEmpty else { return .white }
+        let image = icon ?? appIcon(bundleID)
+        guard let color = image?.averageAccentColor?.usingColorSpace(.sRGB) else { return .white }
+        memory[bundleID] = color
+        save(color, for: bundleID, in: key)
+        return color
+    }
+
+    /// Приложения, для которых цвет уже известен, — для списка в настройках.
+    static var knownApps: [String] {
+        Array(Set(stored(key).keys).union(stored(overridesKey).keys)).sorted { displayName($0) < displayName($1) }
+    }
+
+    static func isCustom(_ bundleID: String) -> Bool {
+        stored(overridesKey)[bundleID] != nil
+    }
+
+    static func setCustom(_ color: NSColor, for bundleID: String) {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return }
+        save(srgb, for: bundleID, in: overridesKey)
+    }
+
+    static func clearCustom(for bundleID: String) {
+        var all = UserDefaults.standard.dictionary(forKey: overridesKey) ?? [:]
+        all[bundleID] = nil
+        UserDefaults.standard.set(all, forKey: overridesKey)
+    }
+
+    /// «Сбросить цвета плееров»: забываем и посчитанные, и заданные вручную — посчитаются заново.
+    static func resetAll() {
+        memory.removeAll()
+        UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: overridesKey)
+    }
+
+    static func displayName(_ bundleID: String) -> String {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+            .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+            ?? bundleID
+    }
+
+    static func appIcon(_ bundleID: String) -> NSImage? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map { NSWorkspace.shared.icon(forFile: $0.path) }
+    }
+
+    private static func stored(_ key: String) -> [String: NSColor] {
+        let raw = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        var result: [String: NSColor] = [:]
+        for (bundleID, value) in raw {
+            guard let rgb = value as? [Double], rgb.count == 3 else { continue }
+            result[bundleID] = NSColor(srgbRed: rgb[0], green: rgb[1], blue: rgb[2], alpha: 1)
+        }
+        return result
+    }
+
+    private static func save(_ color: NSColor, for bundleID: String, in key: String) {
+        var all = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        all[bundleID] = [Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent)]
+        UserDefaults.standard.set(all, forKey: key)
     }
 }

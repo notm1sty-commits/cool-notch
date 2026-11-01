@@ -1,12 +1,14 @@
 import Foundation
 
-/// Заряд наушников Apple (левый, правый, футляр). macOS показывает его в «Информации о системе»,
-/// оттуда же берём и мы — через `system_profiler`, без особых разрешений.
+/// Заряд Bluetooth-наушников и колонок (у AirPods — левый, правый, футляр). macOS показывает его
+/// в «Информации о системе», оттуда же берём и мы — через `system_profiler`, без особых разрешений.
 struct AirPodsLevels: Sendable, Equatable {
     var left: Int?
     var right: Int?
     var caseLevel: Int?
     var single: Int?
+    /// Тип устройства из macOS: «Headphones», «Headset», «Loudspeaker»…
+    var deviceType: String?
 
     var isEmpty: Bool { left == nil && right == nil && caseLevel == nil && single == nil }
 }
@@ -44,15 +46,17 @@ enum AirPodsBattery {
             for entry in connected {
                 for (name, value) in entry {
                     guard let info = value as? [String: Any] else { continue }
-                    let matches = name == deviceName || name.localizedCaseInsensitiveContains("airpods")
+                    let matches = name == deviceName
+                        || (deviceName.localizedCaseInsensitiveContains("airpods") && name.localizedCaseInsensitiveContains("airpods"))
                     guard matches else { continue }
-                    let levels = AirPodsLevels(
+                    // Возвращаем и устройства без заряда — нужен хотя бы их тип (наушники или колонка).
+                    return AirPodsLevels(
                         left: percent(info["device_batteryLevelLeft"]),
                         right: percent(info["device_batteryLevelRight"]),
                         caseLevel: percent(info["device_batteryLevelCase"]),
-                        single: percent(info["device_batteryLevelMain"])
+                        single: percent(info["device_batteryLevelMain"]),
+                        deviceType: info["device_minorType"] as? String
                     )
-                    if !levels.isEmpty { return levels }
                 }
             }
         }

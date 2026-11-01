@@ -18,7 +18,7 @@ final class DemoDirector {
         Task { await play() }
     }
 
-    private static func image(_ name: String) -> NSImage? {
+    static func image(_ name: String) -> NSImage? {
         guard let url = Bundle.main.url(forResource: name, withExtension: "jpg", subdirectory: "Demo") else { return nil }
         return NSImage(contentsOf: url)
     }
@@ -69,7 +69,7 @@ final class DemoDirector {
             duration: 4,
             action: .openApp("com.apple.MobileSMS"),
             expanded: true,
-            glows: true
+            source: "Сообщения"
         ))
         await wait(4.8)
 

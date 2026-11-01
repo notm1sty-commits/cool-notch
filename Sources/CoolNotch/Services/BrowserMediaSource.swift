@@ -25,6 +25,8 @@ struct BrowserMedia: Decodable, Sendable {
     var position: Double
     var url: String
     var tabTitle: String
+    /// Скорость воспроизведения вкладки (видео на 1.5x, 2x…).
+    var rate: Double?
 }
 
 struct BrowserFetchResult: Sendable {
@@ -54,7 +56,7 @@ final class BrowserMediaSource: @unchecked Sendable {
     ]
 
     // В строках JS только одинарные кавычки — их не нужно экранировать в AppleScript.
-    private static let readJS = "(function(){try{var ms=navigator.mediaSession;var m=ms&&ms.metadata;var e=document.querySelector('video,audio');if(!m&&!e)return '';var art='';if(m&&m.artwork&&m.artwork.length){art=m.artwork[m.artwork.length-1].src;}var playing=(ms&&ms.playbackState==='playing')||(!!e&&!e.paused&&!e.ended);return JSON.stringify({title:(m&&m.title)||document.title||'',artist:(m&&m.artist)||'',album:(m&&m.album)||'',artwork:art||'',playing:!!playing,duration:(e&&isFinite(e.duration))?e.duration:0,position:e?e.currentTime:0,url:location.href,tabTitle:document.title||''});}catch(x){return '';}})()"
+    private static let readJS = "(function(){try{var ms=navigator.mediaSession;var m=ms&&ms.metadata;var e=document.querySelector('video,audio');if(!m&&!e)return '';var art='';if(m&&m.artwork&&m.artwork.length){art=m.artwork[m.artwork.length-1].src;}var playing=(ms&&ms.playbackState==='playing')||(!!e&&!e.paused&&!e.ended);return JSON.stringify({title:(m&&m.title)||document.title||'',artist:(m&&m.artist)||'',album:(m&&m.album)||'',artwork:art||'',playing:!!playing,duration:(e&&isFinite(e.duration))?e.duration:0,position:e?e.currentTime:0,rate:e?e.playbackRate:1,url:location.href,tabTitle:document.title||''});}catch(x){return '';}})()"
 
     private static let toggleJS = "(function(){var e=document.querySelector('video,audio');if(!e)return '';if(e.paused){e.play();}else{e.pause();}return 'ok';})()"
 
@@ -111,14 +113,31 @@ final class BrowserMediaSource: @unchecked Sendable {
         runner.run(Self.script(for: kind, js: action.js, collectAll: false, exactURL: url))
     }
 
-    /// То же, но сообщает, получилось ли: без «JavaScript из Apple Events» браузер откажет.
-    func perform(_ action: Action, in kind: BrowserKind, url: String?, completion: @escaping @MainActor (Bool) -> Void) {
-        runner.run(
-            Self.script(for: kind, js: action.js, collectAll: false, exactURL: url),
-            parse: { $0.stringValue }
-        ) { result in
-            completion(result == "ok")
-        }
+    /// Чем закончилась команда вкладке.
+    enum ControlResult: Equatable, Sendable {
+        case ok
+        /// Нет разрешения «Автоматизация» на управление браузером.
+        case notAuthorized
+        /// В браузере выключен «JavaScript из Apple Events».
+        case javaScriptOff
+        /// Не нашли вкладку с этим видео.
+        case noTab
+        case failed(String)
+    }
+
+    /// То же, но сообщает, что именно произошло.
+    func perform(_ action: Action, in kind: BrowserKind, url: String?, completion: @escaping @MainActor (ControlResult) -> Void) {
+        let source = Self.script(for: kind, js: action.js, collectAll: false, exactURL: url)
+        runner.perform({ _ in
+            let result = AppleScriptRunner.executeDetailed(source)
+            if let text = result.descriptor?.stringValue {
+                return text == "ok" ? ControlResult.ok : .noTab
+            }
+            if result.code == -1743 { return .notAuthorized }
+            let message = result.message ?? "Браузер не ответил"
+            if message.localizedCaseInsensitiveContains("JavaScript") { return .javaScriptOff }
+            return .failed(message)
+        }, completion: completion)
     }
 
     /// Переключает браузер на вкладку с этим медиа (по адресу или заголовку) и выводит его вперёд.

@@ -9,6 +9,8 @@ struct PlayerSnapshot: Sendable {
     var duration: Double
     var position: Double
     var artworkURL: String?
+    /// Повтор как его называет плеер: Музыка — off/one/all, Spotify — true/false.
+    var repeatMode: String?
 }
 
 /// Выполняет AppleScript на отдельной очереди, чтобы не тормозить интерфейс.
@@ -45,6 +47,17 @@ final class AppleScriptRunner: @unchecked Sendable {
         }
     }
 
+    /// Как `execute`, но с номером ошибки — чтобы понять, что именно не так
+    /// (-1743 — нет разрешения «Автоматизация», выключенный JavaScript в браузере и т. д.).
+    static func executeDetailed(_ source: String) -> (descriptor: NSAppleEventDescriptor?, code: Int?, message: String?) {
+        var error: NSDictionary?
+        let descriptor = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error {
+            return (nil, error[NSAppleScript.errorNumber] as? Int, error[NSAppleScript.errorMessage] as? String)
+        }
+        return (descriptor, nil, nil)
+    }
+
     /// Синхронное выполнение. Вызывать только внутри `perform`.
     static func execute(_ source: String) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
         var error: NSDictionary?
@@ -71,7 +84,8 @@ final class AppleScriptRunner: @unchecked Sendable {
             album: text(4),
             duration: number(5),
             position: number(6),
-            artworkURL: count >= 7 ? d.atIndex(7)?.stringValue : nil
+            artworkURL: count >= 7 ? d.atIndex(7)?.stringValue.flatMap { $0.isEmpty ? nil : $0 } : nil,
+            repeatMode: count >= 8 ? d.atIndex(8)?.stringValue : nil
         )
     }
 }

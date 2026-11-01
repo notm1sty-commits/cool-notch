@@ -4,7 +4,7 @@
 // своим процессам. Поэтому Cool Notch запускает системный /usr/bin/perl, тот
 // загружает эту библиотеку и вызывает coolnotch_bridge_run(). Дальше библиотека:
 //   • пишет в stdout по одной JSON-строке на каждое изменение трека;
-//   • читает из stdin команды: play, pause, toggle, next, prev, seek <сек>, refresh;
+//   • читает из stdin команды: play, pause, toggle, stop, next, prev, seek <сек>, repeat <1|2|3>, refresh, burst;
 //   • завершается, когда закрывается stdin (то есть когда закрылся Cool Notch).
 //
 // Так чёлка видит любой плеер: приложение Яндекс Музыки, браузер, Spotify и т. д.
@@ -12,6 +12,8 @@
 
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -21,6 +23,11 @@ typedef void (*MRGetPIDFn)(dispatch_queue_t, void (^)(int));
 typedef void (*MRRegisterFn)(dispatch_queue_t);
 typedef Boolean (*MRSendCommandFn)(int, CFDictionaryRef);
 typedef void (*MRSetElapsedTimeFn)(double);
+// Чтение всех клиентов «Что играет», а не только выбранного системой
+// (см. github.com/ungive/mediaremote-adapter/issues/41 — так же вызывается и там).
+typedef void (*MRGetClientsFn)(dispatch_queue_t, void (^)(CFArrayRef));
+typedef void *(*MRGetLocalOriginFn)(void);
+typedef void (*MRGetInfoForPlayerFn)(id, void *, dispatch_queue_t, void (^)(NSDictionary *, NSError *));
 
 static MRGetNowPlayingInfoFn gGetInfo = NULL;
 static MRGetIsPlayingFn gGetIsPlaying = NULL;
@@ -28,11 +35,28 @@ static MRGetPIDFn gGetPID = NULL;
 static MRRegisterFn gRegister = NULL;
 static MRSendCommandFn gSendCommand = NULL;
 static MRSetElapsedTimeFn gSetElapsed = NULL;
+static MRGetClientsFn gGetClients = NULL;
+static MRGetLocalOriginFn gGetLocalOrigin = NULL;
+static MRGetInfoForPlayerFn gGetInfoForPlayer = NULL;
+/// Включается переменной окружения COOLNOTCH_ALL_CLIENTS=1. Если в этом режиме помощник
+/// упадёт, Cool Notch перезапустит его без неё (см. MediaBridgeProcess).
+static BOOL gAllClients = NO;
+static BOOL gClientsInFlight = NO;
+static CFAbsoluteTime gClientsStarted = 0;
+static NSMutableDictionary<NSString *, NSString *> *gClientArtworkKeys = nil;
 
 static NSString *gLastArtworkKey = nil;
 static BOOL gRefreshScheduled = NO;
-static unsigned long gGeneration = 0;
+static BOOL gRefreshInFlight = NO;
+static BOOL gRefreshPending = NO;
+static CFAbsoluteTime gRefreshStarted = 0;
 static NSMutableData *gInputBuffer = nil;
+/// «Рывок»: сразу после переключения трека полторы секунды опрашиваем систему часто,
+/// чтобы новый трек показался как можно быстрее. В остальное время — только по уведомлениям.
+static dispatch_source_t gBurstTimer = nil;
+static CFAbsoluteTime gBurstUntil = 0;
+/// Последнее отправленное состояние — во время «рывка» одинаковое не повторяем.
+static NSString *gLastInfoSignature = nil;
 
 static void emitJSON(NSDictionary *payload) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
@@ -79,6 +103,11 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
     out[@"timestamp"] = @(time);
     out[@"playing"] = @(playing);
     out[@"pid"] = @(pid);
+    // Повтор: 1 — выкл, 2 — один трек, 3 — всё (0 или нет ключа — плеер не сообщает).
+    id repeatMode = info[@"kMRMediaRemoteNowPlayingInfoRepeatMode"];
+    if ([repeatMode isKindOfClass:[NSNumber class]]) {
+        out[@"repeatMode"] = repeatMode;
+    }
 
     id artwork = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
     if ([artwork isKindOfClass:[NSData class]] && [(NSData *)artwork length] > 0) {
@@ -94,21 +123,156 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
         gLastArtworkKey = nil;
     }
 
+    NSString *signature = [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@|%d|%@|%@",
+        title, artist, album, out[@"elapsed"], out[@"rate"], out[@"timestamp"], pid, out[@"hasArtwork"], out[@"repeatMode"]];
+    BOOL bursting = CFAbsoluteTimeGetCurrent() < gBurstUntil;
+    if (bursting && out[@"artwork"] == nil && [signature isEqualToString:gLastInfoSignature]) {
+        return;
+    }
+    gLastInfoSignature = signature;
     emitJSON(out);
 }
 
+/// Данные одного клиента (не выбранного системой плеера) для сообщения "clients".
+static NSDictionary *clientPayload(NSDictionary *info, NSString *bundle, NSNumber *pid) {
+    NSString *title = stringValue(info[@"kMRMediaRemoteNowPlayingInfoTitle"]);
+    if (title.length == 0) {
+        return nil;
+    }
+    NSString *artist = stringValue(info[@"kMRMediaRemoteNowPlayingInfoArtist"]);
+    NSString *album = stringValue(info[@"kMRMediaRemoteNowPlayingInfoAlbum"]);
+    id timestamp = info[@"kMRMediaRemoteNowPlayingInfoTimestamp"];
+    double time = [timestamp isKindOfClass:[NSDate class]]
+        ? [(NSDate *)timestamp timeIntervalSince1970]
+        : [[NSDate date] timeIntervalSince1970];
+
+    NSMutableDictionary *out = [NSMutableDictionary dictionary];
+    out[@"bundle"] = bundle;
+    out[@"pid"] = pid ?: @0;
+    out[@"title"] = title;
+    out[@"artist"] = artist;
+    out[@"album"] = album;
+    out[@"duration"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoDuration"]));
+    out[@"elapsed"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoElapsedTime"]));
+    out[@"rate"] = @(doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]));
+    out[@"timestamp"] = @(time);
+    id repeatMode = info[@"kMRMediaRemoteNowPlayingInfoRepeatMode"];
+    if ([repeatMode isKindOfClass:[NSNumber class]]) {
+        out[@"repeatMode"] = repeatMode;
+    }
+
+    id artwork = info[@"kMRMediaRemoteNowPlayingInfoArtworkData"];
+    if ([artwork isKindOfClass:[NSData class]] && [(NSData *)artwork length] > 0) {
+        NSData *artworkData = (NSData *)artwork;
+        out[@"hasArtwork"] = @YES;
+        NSString *key = [NSString stringWithFormat:@"%@|%@|%@|%lu", title, artist, album, (unsigned long)artworkData.length];
+        if (![key isEqualToString:gClientArtworkKeys[bundle]]) {
+            gClientArtworkKeys[bundle] = key;
+            out[@"artwork"] = [artworkData base64EncodedStringWithOptions:0];
+        }
+    } else {
+        out[@"hasArtwork"] = @NO;
+        [gClientArtworkKeys removeObjectForKey:bundle];
+    }
+    return out;
+}
+
+/// Все приложения, которые сейчас сообщают системе о воспроизведении. macOS отдаёт команды
+/// только выбранному, но прочитать можно каждое — так чёлка видит, например, Яндекс Музыку,
+/// даже когда «главным» система считает браузер.
+static void refreshClients(void) {
+    if (!gAllClients || gGetClients == NULL || gGetLocalOrigin == NULL || gGetInfoForPlayer == NULL) {
+        return;
+    }
+    // Предыдущий запрос ещё идёт — ждём, но не дольше 4 секунд (вдруг MediaRemote не ответил).
+    if (gClientsInFlight && CFAbsoluteTimeGetCurrent() - gClientsStarted < 4) {
+        return;
+    }
+    Class pathClass = NSClassFromString(@"MRPlayerPath");
+    SEL initSelector = NSSelectorFromString(@"initWithOrigin:client:player:");
+    if (pathClass == Nil || ![pathClass instancesRespondToSelector:initSelector]) {
+        return;
+    }
+    gClientsInFlight = YES;
+    gClientsStarted = CFAbsoluteTimeGetCurrent();
+    dispatch_queue_t queue = dispatch_get_main_queue();
+    gGetClients(queue, ^(CFArrayRef raw) {
+        NSArray *clients = raw != NULL ? [(__bridge NSArray *)raw copy] : @[];
+        id origin = (__bridge id)gGetLocalOrigin();
+        NSMutableArray *items = [NSMutableArray array];
+        dispatch_group_t group = dispatch_group_create();
+
+        for (id client in clients) {
+            if (![client respondsToSelector:@selector(bundleIdentifier)]) {
+                continue;
+            }
+            id bundle = [client valueForKey:@"bundleIdentifier"];
+            if (![bundle isKindOfClass:[NSString class]] || [(NSString *)bundle length] == 0) {
+                continue;
+            }
+            NSNumber *pid = @0;
+            if ([client respondsToSelector:@selector(processIdentifier)]) {
+                id value = [client valueForKey:@"processIdentifier"];
+                if ([value isKindOfClass:[NSNumber class]]) {
+                    pid = value;
+                }
+            }
+            id path = ((id (*)(id, SEL, id, id, id))objc_msgSend)([pathClass alloc], initSelector, origin, client, nil);
+            if (path == nil) {
+                continue;
+            }
+            dispatch_group_enter(group);
+            gGetInfoForPlayer(path, NULL, queue, ^(NSDictionary *info, NSError *error) {
+                (void)error;
+                if ([info isKindOfClass:[NSDictionary class]] && info.count > 0) {
+                    NSDictionary *item = clientPayload(info, (NSString *)bundle, pid);
+                    if (item != nil) {
+                        [items addObject:item];
+                    }
+                }
+                dispatch_group_leave(group);
+            });
+        }
+
+        // Если кто-то из клиентов не ответил за 2 секунды — отправляем то, что есть.
+        __block BOOL sent = NO;
+        void (^send)(void) = ^{
+            if (sent) {
+                return;
+            }
+            sent = YES;
+            gClientsInFlight = NO;
+            emitJSON(@{ @"type": @"clients", @"items": [items copy] });
+        };
+        dispatch_group_notify(group, queue, send);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), queue, send);
+    });
+}
+
 static void scheduleRefresh(void);
+static void refreshNow(void);
+static void refreshMain(void);
+
+/// Запросы идут строго по одному: пока один не ответил, новые события только помечают
+/// «нужно ещё раз». Раньше более свежий запрос отменял текущий, и плееры, которые
+/// обновляют позицию очень часто (приложение Яндекс Музыки), не успевали показаться вовсе.
+static void finishRefresh(void) {
+    gRefreshInFlight = NO;
+    if (gRefreshPending) {
+        gRefreshPending = NO;
+        if (CFAbsoluteTimeGetCurrent() < gBurstUntil) {
+            refreshMain();
+        } else {
+            refreshNow();
+        }
+    }
+}
 
 /// Название трека, «играет ли» и PID приложения MediaRemote отдаёт разными вызовами.
 /// Если между ними система переключилась на другой плеер (видео ↔ музыка), данные
-/// перемешивались, и карточки в чёлке начинали мигать. Поэтому: PID до и после,
-/// и только самый свежий запрос имеет право что-то отправить.
-static void refreshNow(void) {
-    if (gGetInfo == NULL) {
-        emitJSON(@{ @"type": @"info", @"empty": @YES });
-        return;
-    }
-    unsigned long generation = ++gGeneration;
+/// перемешивались, и карточки мигали. Поэтому сверяем PID до и после и при расхождении
+/// спрашиваем заново (не больше двух раз — дальше отдаём то, что есть).
+static void performRefresh(int attempt) {
     dispatch_queue_t queue = dispatch_get_main_queue();
 
     void (^readPID)(void (^)(int)) = ^(void (^done)(int)) {
@@ -120,23 +284,18 @@ static void refreshNow(void) {
     };
 
     readPID(^(int pidBefore) {
-        if (generation != gGeneration) {
-            return;
-        }
         gGetInfo(queue, ^(CFDictionaryRef rawInfo) {
             NSDictionary *info = rawInfo != NULL ? [(__bridge NSDictionary *)rawInfo copy] : @{};
             double rate = doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]);
 
             void (^finish)(BOOL) = ^(BOOL playing) {
                 readPID(^(int pidAfter) {
-                    if (generation != gGeneration) {
-                        return;  // уже идёт более свежий запрос
-                    }
-                    if (pidAfter != pidBefore) {
-                        scheduleRefresh();  // плеер сменился посередине — спросим ещё раз
+                    if (pidAfter != pidBefore && attempt < 2) {
+                        performRefresh(attempt + 1);
                         return;
                     }
                     emitInfo(info, playing, pidAfter);
+                    finishRefresh();
                 });
             };
 
@@ -151,15 +310,61 @@ static void refreshNow(void) {
     });
 }
 
+/// Только выбранный системой плеер — то, что меняется при переключении трека.
+static void refreshMain(void) {
+    if (gGetInfo == NULL) {
+        emitJSON(@{ @"type": @"info", @"empty": @YES });
+        return;
+    }
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    // Если MediaRemote почему-то не ответил за 2 секунды, не ждём его вечно.
+    if (gRefreshInFlight && now - gRefreshStarted < 2.0) {
+        gRefreshPending = YES;
+        return;
+    }
+    gRefreshInFlight = YES;
+    gRefreshStarted = now;
+    performRefresh(0);
+}
+
+static void refreshNow(void) {
+    refreshMain();
+    refreshClients();
+}
+
+/// Уведомления приходят пачкой — собираем их за один кадр (раньше ждали 80 мс).
 static void scheduleRefresh(void) {
     if (gRefreshScheduled) {
         return;
     }
     gRefreshScheduled = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(16 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         gRefreshScheduled = NO;
         refreshNow();
     });
+}
+
+/// После «следующий/предыдущий» ~1,6 с опрашиваем плеер каждые 60 мс: многие плееры
+/// сообщают о новом треке с задержкой или по частям. Запросы всё равно идут строго
+/// по одному, а одинаковые ответы не пересылаются — нагрузка небольшая и только в этот момент.
+static void startBurst(double seconds) {
+    gBurstUntil = MAX(gBurstUntil, CFAbsoluteTimeGetCurrent() + seconds);
+    if (gBurstTimer != nil) {
+        return;
+    }
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 40 * NSEC_PER_MSEC), 60 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(timer, ^{
+        if (CFAbsoluteTimeGetCurrent() > gBurstUntil) {
+            dispatch_source_cancel(gBurstTimer);
+            gBurstTimer = nil;
+            refreshNow();
+            return;
+        }
+        refreshMain();
+    });
+    gBurstTimer = timer;
+    dispatch_resume(timer);
 }
 
 static void handleCommand(NSString *line) {
@@ -174,6 +379,21 @@ static void handleCommand(NSString *line) {
         refreshNow();
         return;
     }
+    if ([name isEqualToString:@"burst"]) {
+        startBurst(1.6);
+        return;
+    }
+    // Повтор: команда «сменить режим повтора» (25) с нужным режимом в параметрах.
+    if ([name isEqualToString:@"repeat"]) {
+        if (parts.count > 1 && gSendCommand != NULL) {
+            CFStringRef *keyRef = (CFStringRef *)dlsym(RTLD_DEFAULT, "kMRMediaRemoteOptionRepeatMode");
+            NSString *key = (keyRef != NULL && *keyRef != NULL) ? (__bridge NSString *)*keyRef : @"kMRMediaRemoteOptionRepeatMode";
+            NSDictionary *options = @{ key: @([parts[1] intValue]) };
+            gSendCommand(25, (__bridge CFDictionaryRef)options);
+        }
+        scheduleRefresh();
+        return;
+    }
     if ([name isEqualToString:@"seek"]) {
         if (parts.count > 1 && gSetElapsed != NULL) {
             gSetElapsed([parts[1] doubleValue]);
@@ -186,11 +406,15 @@ static void handleCommand(NSString *line) {
     if ([name isEqualToString:@"play"]) command = 0;
     else if ([name isEqualToString:@"pause"]) command = 1;
     else if ([name isEqualToString:@"toggle"]) command = 2;
+    else if ([name isEqualToString:@"stop"]) command = 3;
     else if ([name isEqualToString:@"next"]) command = 4;
     else if ([name isEqualToString:@"prev"]) command = 5;
 
     if (command >= 0 && gSendCommand != NULL) {
         gSendCommand(command, NULL);
+    }
+    if (command == 4 || command == 5) {
+        startBurst(1.6);
     }
     scheduleRefresh();
 }
@@ -234,6 +458,9 @@ static void loadMediaRemote(void) {
     gRegister = (MRRegisterFn)dlsym(handle, "MRMediaRemoteRegisterForNowPlayingNotifications");
     gSendCommand = (MRSendCommandFn)dlsym(handle, "MRMediaRemoteSendCommand");
     gSetElapsed = (MRSetElapsedTimeFn)dlsym(handle, "MRMediaRemoteSetElapsedTime");
+    gGetClients = (MRGetClientsFn)dlsym(handle, "MRMediaRemoteGetNowPlayingClients");
+    gGetLocalOrigin = (MRGetLocalOriginFn)dlsym(handle, "MRMediaRemoteGetLocalOrigin");
+    gGetInfoForPlayer = (MRGetInfoForPlayerFn)dlsym(handle, "MRMediaRemoteGetNowPlayingInfoForPlayer");
 }
 
 /// Точка входа. Вызывается из perl как XSUB, поэтому принимает (интерпретатор, CV) и не использует их.
@@ -243,6 +470,9 @@ void coolnotch_bridge_run(void *interpreter, void *cv) {
     (void)cv;
 
     @autoreleasepool {
+        const char *allClients = getenv("COOLNOTCH_ALL_CLIENTS");
+        gAllClients = allClients != NULL && strcmp(allClients, "1") == 0;
+        gClientArtworkKeys = [NSMutableDictionary dictionary];
         loadMediaRemote();
         if (gRegister != NULL) {
             gRegister(dispatch_get_main_queue());
@@ -264,7 +494,7 @@ void coolnotch_bridge_run(void *interpreter, void *cv) {
         }
 
         // Страховка на случай, если какое-то уведомление не пришло.
-        NSTimer *timer = [NSTimer timerWithTimeInterval:5 repeats:YES block:^(NSTimer *t) {
+        NSTimer *timer = [NSTimer timerWithTimeInterval:(gAllClients ? 3 : 5) repeats:YES block:^(NSTimer *t) {
             (void)t;
             refreshNow();
         }];

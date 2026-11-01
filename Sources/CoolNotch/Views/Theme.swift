@@ -9,6 +9,8 @@ enum Theme {
     static let bouncy = Animation.spring(response: 0.45, dampingFraction: 0.62)
     static let deck = Animation.spring(response: 0.55, dampingFraction: 0.78)
     static let reduced = Animation.easeInOut(duration: 0.2)
+    /// Смена трека: быстро и чётко, без раскачки.
+    static let track = Animation.spring(response: 0.3, dampingFraction: 0.88)
 
     // MARK: Colors
     static let secondaryText = Color.white.opacity(0.62)
@@ -23,6 +25,9 @@ enum Theme {
     static let padding: CGFloat = 18
     static let cardRadius: CGFloat = 22
     static let chipRadius: CGFloat = 12
+    /// Высота карточки плеера. Строки внутри неё фиксированной высоты, поэтому низ кнопки
+    /// «Открыть» всегда на одной линии (playerHeight − 2) — по ней выровнен «Старт» таймера.
+    static let playerHeight: CGFloat = 124
 }
 
 /// Спокойное появление: прозрачность и лёгкий масштаб от верхнего края, как у Dynamic Island.
@@ -37,6 +42,35 @@ struct RevealTransition: Transition {
             .opacity(identity ? 1 : 0)
             .scaleEffect(identity ? 1 : scale, anchor: .top)
             .offset(identity ? .zero : offset)
+    }
+}
+
+/// Смена трека: старое уезжает в сторону листания, новое въезжает с другой стороны.
+struct TrackSlide: Transition {
+    /// +1 — следующий трек (новое появляется справа), −1 — предыдущий.
+    var direction: CGFloat = 1
+    var distance: CGFloat = 16
+
+    func body(content: Content, phase: TransitionPhase) -> some View {
+        // phase.value: −1 — появляется, 0 — на месте, 1 — исчезает.
+        content
+            .offset(x: -CGFloat(phase.value) * distance * direction)
+            .opacity(phase.isIdentity ? 1 : 0)
+            .blur(radius: phase.isIdentity ? 0 : 2.5)
+    }
+}
+
+/// Пока плеер переключает трек, текущий слегка «уходит» — нажатие откликается сразу,
+/// ещё до того, как плеер сообщит новый трек.
+struct SwitchingLook: ViewModifier {
+    var active: Bool
+    var direction: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(active ? 0.38 : 1)
+            .offset(x: active ? -7 * direction : 0)
+            .blur(radius: active ? 1.4 : 0)
     }
 }
 

@@ -3,29 +3,122 @@ import SwiftUI
 struct ClipboardView: View {
     @Environment(NotchViewModel.self) var vm
     @State var copiedID: UUID?
+    @State var editing = false
+    @State var spin = 0.0
 
     private let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
 
     var body: some View {
         let clipboard = vm.clipboard
+        VStack(spacing: 6) {
+            if clipboard.isEnabled {
+                header(clipboard)
+            }
+            if clipboard.isEnabled, clipboard.screenshotAccess == false, Pref.bool(Pref.screenshotsInHistory) {
+                ScreenshotAccessRow { clipboard.fixScreenshotAccess() }
+                    .transition(.opacity)
+            }
+            list(clipboard)
+        }
+        .overlay { emptyState(clipboard) }
+        .animation(Theme.content, value: clipboard.screenshotAccess)
+        .onChange(of: clipboard.entries.isEmpty) { _, empty in if empty { editing = false } }
+    }
+
+    /// Пустое состояние — по центру всей панели, на той же высоте, что на полке и в заметках.
+    @ViewBuilder
+    private func emptyState(_ clipboard: ClipboardService) -> some View {
+        if !clipboard.isEnabled {
+            PlaceholderView(
+                icon: "doc.on.clipboard",
+                title: "История буфера выключена",
+                subtitle: "Включить можно в настройках",
+                layout: .horizontal
+            )
+            .allowsHitTesting(false)
+        } else if clipboard.entries.isEmpty {
+            PlaceholderView(
+                icon: "doc.on.clipboard",
+                title: "Скопируй текст или сделай скриншот",
+                subtitle: "Они появятся здесь. Пароли не сохраняются.",
+                layout: .horizontal
+            )
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// «Проверить» — перечитать буфер и скриншоты сразу; «Изменить» — удалять лишнее.
+    private func header(_ clipboard: ClipboardService) -> some View {
+        HStack(spacing: 8) {
+            Text("История").sectionLabelStyle()
+            if !clipboard.entries.isEmpty {
+                Text("\(clipboard.entries.count)")
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Theme.tertiaryText)
+                    .contentTransition(.numericText())
+            }
+            Spacer()
+            if editing {
+                Button("Очистить всё") {
+                    withAnimation(Theme.content) { clipboard.clear() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(Color.red.opacity(0.9))
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                .glass(11)
+                .transition(.opacity)
+            } else {
+                Button {
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { spin += 360 }
+                    clipboard.checkNow()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10, weight: .bold))
+                            .rotationEffect(.degrees(spin))
+                        Text("Проверить")
+                    }
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .padding(.horizontal, 10)
+                    .frame(height: 22)
+                    .glass(11)
+                }
+                .buttonStyle(.plain)
+                .help("Сразу проверить буфер обмена и новые скриншоты")
+                .transition(.opacity)
+            }
+            if !clipboard.entries.isEmpty {
+                Button(editing ? "Готово" : "Изменить") {
+                    withAnimation(Theme.content) { editing.toggle() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundStyle(editing ? Theme.orange : .white.opacity(0.8))
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                .glass(11)
+            }
+        }
+        .frame(height: 24)
+    }
+
+    @ViewBuilder
+    private func list(_ clipboard: ClipboardService) -> some View {
         ZStack {
-            if !clipboard.isEnabled {
-                PlaceholderView(
-                    icon: "doc.on.clipboard",
-                    title: "История буфера выключена",
-                    subtitle: "Включить можно в настройках"
-                )
-            } else if clipboard.entries.isEmpty {
-                PlaceholderView(
-                    icon: "doc.on.clipboard",
-                    title: "Скопируй текст или сделай скриншот",
-                    subtitle: "Последние копирования и снимки экрана появятся здесь. Пароли не сохраняются."
-                )
+            if !clipboard.isEnabled || clipboard.entries.isEmpty {
+                Color.clear
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVGrid(columns: columns, spacing: 6) {
                         ForEach(clipboard.entries) { entry in
-                            ClipRow(entry: entry, copied: copiedID == entry.id) {
+                            ClipRow(entry: entry, copied: copiedID == entry.id, editing: editing) {
+                                if editing {
+                                    withAnimation(Theme.content) { clipboard.remove(entry) }
+                                    return
+                                }
                                 clipboard.copy(entry)
                                 withAnimation(Theme.micro) { copiedID = clipboard.entries.first?.id }
                                 if Pref.bool(Pref.haptics) {
@@ -43,9 +136,41 @@ struct ClipboardView: View {
     }
 }
 
+/// macOS не пускает в папку со скриншотами — объясняем и даём починить в один клик.
+private struct ScreenshotAccessRow: View {
+    var action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Скриншоты не видны: нет доступа к папке")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("После обновления macOS иногда забывает разрешение")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            Spacer(minLength: 6)
+            Button("Разрешить", action: action)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                .background(Capsule().fill(Color.white))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glass(12)
+    }
+}
+
 private struct ClipRow: View {
     let entry: ClipboardService.Entry
     var copied: Bool
+    var editing = false
     var onCopy: () -> Void
     var onDelete: () -> Void
 
@@ -54,6 +179,13 @@ private struct ClipRow: View {
     var body: some View {
         Button(action: onCopy) {
             HStack(spacing: 9) {
+                if editing {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 14))
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, Color.red)
+                        .transition(.scale.combined(with: .opacity))
+                }
                 leading
                 VStack(alignment: .leading, spacing: 1) {
                     Text(preview)
@@ -79,6 +211,8 @@ private struct ClipRow: View {
         }
         .help(entry.isImage ? "Нажми, чтобы скопировать картинку, или перетащи её" : String(entry.text.prefix(500)))
         .onDrag {
+            // Во время перетаскивания наведение не сообщается — снимаем подсветку сразу.
+            hovering = false
             if let url = entry.fileURL { return NSItemProvider(contentsOf: url) ?? NSItemProvider() }
             if let image = entry.image { return NSItemProvider(object: image) }
             return NSItemProvider(object: entry.text as NSString)

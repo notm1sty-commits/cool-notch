@@ -24,8 +24,8 @@ struct ExpandedNotchView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, Theme.padding)
-            .padding(.top, 12)
-            .padding(.bottom, 16)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
         }
         .foregroundStyle(.white)
     }
@@ -37,6 +37,7 @@ struct ExpandedNotchView: View {
         case .shelf: ShelfView()
         case .clipboard: ClipboardView()
         case .notes: NotesView()
+        case .clock: ClockView()
         }
     }
 }
@@ -59,13 +60,10 @@ private struct HeaderBar: View {
                 if vm.updates.hasUpdate {
                     Button {
                         vm.updates.install()
+                        UserDefaults.standard.set(SettingsPage.updates.rawValue, forKey: "settingsPage")
                         vm.openSettings?()
                     } label: {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.green)
-                            .frame(width: 26, height: 26)
-                            .glass(13)
+                        PillIcon(systemName: "arrow.down.circle.fill", tint: .green)
                     }
                     .buttonStyle(PressableButtonStyle())
                     .help("Установить обновление")
@@ -74,12 +72,9 @@ private struct HeaderBar: View {
                 Button {
                     vm.openSettings?()
                 } label: {
-                    Image(systemName: "gearshape.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                        .glass(13)
+                    PillIcon(systemName: "gearshape.fill")
                 }
-                .buttonStyle(PressableButtonStyle())
+                .buttonStyle(PressableButtonStyle(scale: 0.88))
                 .help("Настройки")
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -132,16 +127,19 @@ private struct LiquidTabs: View {
             leftEdge = x
             rightEdge = x + Self.width
         }
+        // «Капля» едет за выбранной вкладкой, как бы её ни сменили: кликом или свайпом.
+        .onChange(of: vm.tab) { old, new in
+            let forward = new.index > old.index
+            let x = CGFloat(new.index) * Self.width
+            let fast = Animation.spring(response: 0.22, dampingFraction: 0.8)
+            let slow = Animation.spring(response: 0.38, dampingFraction: 0.78)
+            withAnimation(forward ? fast : slow) { rightEdge = x + Self.width }
+            withAnimation(forward ? slow : fast) { leftEdge = x }
+        }
     }
 
     private func select(_ tab: NotchTab) {
         guard tab != vm.tab else { return }
-        let forward = tab.index > vm.tab.index
-        let x = CGFloat(tab.index) * Self.width
-        let fast = Animation.spring(response: 0.22, dampingFraction: 0.8)
-        let slow = Animation.spring(response: 0.38, dampingFraction: 0.78)
-        withAnimation(forward ? fast : slow) { rightEdge = x + Self.width }
-        withAnimation(forward ? slow : fast) { leftEdge = x }
         withAnimation(Theme.content) { vm.select(tab) }
     }
 
@@ -162,6 +160,27 @@ private struct LiquidTabs: View {
     }
 }
 
+/// Кнопка в том же стиле, что вкладки слева: значок на «капле» внутри стеклянной таблетки.
+private struct PillIcon: View {
+    var systemName: String
+    var tint: Color = .white
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 11.5, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: LiquidTabs.width, height: 22)
+            .background(
+                Capsule()
+                    .fill(Color.white.opacity(0.2))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+            )
+            .padding(2)
+            .glass(13)
+    }
+}
+
 private struct BatteryBadge: View {
     @Environment(NotchViewModel.self) var vm
 
@@ -172,19 +191,19 @@ private struct BatteryBadge: View {
                 .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(.white.opacity(0.9))
+            // Как в строке меню macOS: значок целиком белый, и при зарядке тоже.
             Image(systemName: battery.symbolName)
                 .font(.system(size: 14))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(tint(for: battery), .white.opacity(0.45))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(tint(for: battery))
         }
         .animation(Theme.micro, value: battery.level)
         .help(helpText(for: battery))
     }
 
     private func tint(for battery: BatteryService) -> Color {
-        if battery.isCharging || battery.isPluggedIn { return Theme.green }
-        if battery.level <= 20 { return .red }
+        if !battery.isCharging && !battery.isPluggedIn && battery.level <= 20 { return .red }
         return .white
     }
 

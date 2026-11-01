@@ -41,6 +41,11 @@ final class NotesStore {
         save()
     }
 
+    func removeAll() {
+        notes.removeAll()
+        save()
+    }
+
     func move(from source: IndexSet, to destination: Int) {
         notes.move(fromOffsets: source, toOffset: destination)
         save()

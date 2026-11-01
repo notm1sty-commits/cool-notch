@@ -6,15 +6,21 @@ struct ArtworkView: View {
     var image: NSImage?
     var size: CGFloat
     var corner: CGFloat
+    /// Прежняя обложка, пока новая догружается (новый трек часто приходит без неё).
+    @State private var held: NSImage?
+    @State private var holdTask: Task<Void, Never>?
 
     var body: some View {
+        let shown = image ?? held
         ZStack {
-            if let image {
-                Image(nsImage: image)
+            if let shown {
+                // У каждой картинки своя «личность» — новая обложка плавно проявляется поверх старой.
+                Image(nsImage: shown)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
+                    .id(ObjectIdentifier(shown))
+                    .transition(.opacity.combined(with: .scale(scale: 1.08)))
             } else {
                 LinearGradient(
                     colors: [Color(white: 0.22), Color(white: 0.12)],
@@ -32,7 +38,24 @@ struct ArtworkView: View {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
         )
-        .animation(Theme.content, value: image)
+        .opacity(image == nil && held != nil ? 0.6 : 1)
+        .animation(Theme.track, value: shown.map { ObjectIdentifier($0) })
+        .animation(Theme.track, value: image == nil)
+        .onAppear { held = image }
+        .onChange(of: image.map { ObjectIdentifier($0) }) { _, _ in hold() }
+    }
+
+    private func hold() {
+        holdTask?.cancel()
+        if let image {
+            held = image
+            return
+        }
+        holdTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(Theme.track) { held = nil }
+        }
     }
 }
 
@@ -132,10 +155,17 @@ final class EqualizerNSView: NSView {
     func update(color: NSColor, isPlaying: Bool, lowPower: Bool) {
         if color != self.color {
             self.color = color
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.6)
-            for bar in bars { bar.backgroundColor = color.cgColor }  // плавная смена цвета
-            CATransaction.commit()
+            // Плавное перетекание в цвет новой обложки.
+            for bar in bars {
+                let from = bar.presentation()?.backgroundColor ?? bar.backgroundColor
+                let fade = CABasicAnimation(keyPath: "backgroundColor")
+                fade.fromValue = from
+                fade.toValue = color.cgColor
+                fade.duration = 0.8
+                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                bar.backgroundColor = color.cgColor
+                bar.add(fade, forKey: "color")
+            }
         }
         let changed = isPlaying != self.isPlaying || lowPower != self.lowPower
         self.isPlaying = isPlaying
@@ -265,27 +295,123 @@ struct CapsuleButton: View {
     }
 }
 
-struct PlaceholderView: View {
-    var icon: String
+/// Пустое состояние: иконка в круглой подложке, заголовок и подпись. Одна раскладка на всё
+/// приложение — заметки, буфер, полка и AirDrop выглядят одинаково.
+enum PlaceholderLayout {
+    /// Столбиком, а если не помещается по высоте — строкой.
+    case automatic
+    /// Значок слева, текст справа.
+    case horizontal
+    /// Значок сверху, текст под ним.
+    case vertical
+}
+
+struct PlaceholderView<Glyph: View>: View {
     var title: String
     var subtitle: String?
+    var fill: Color = .white.opacity(0.08)
+    var layout: PlaceholderLayout = .automatic
+    @ViewBuilder var glyph: () -> Glyph
 
     var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Theme.tertiaryText)
-                .padding(.bottom, 2)
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            if let subtitle {
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.tertiaryText)
-                    .multilineTextAlignment(.center)
+        Group {
+            switch layout {
+            case .automatic:
+                ViewThatFits(in: .vertical) {
+                    column
+                    row
+                }
+            case .horizontal:
+                row
+            case .vertical:
+                column
             }
         }
+        .padding(.horizontal, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var column: some View {
+        VStack(spacing: 10) {
+            badge
+            VStack(spacing: 3) {
+                titleText
+                subtitleText
+            }
+            .multilineTextAlignment(.center)
+        }
+    }
+
+    private var row: some View {
+        HStack(spacing: 12) {
+            badge
+            VStack(alignment: .leading, spacing: 2) {
+                titleText
+                subtitleText
+            }
+            .multilineTextAlignment(.leading)
+        }
+    }
+
+    private var badge: some View {
+        ZStack {
+            Circle().fill(fill)
+            glyph()
+        }
+        .frame(width: 40, height: 40)
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.88))
+            .lineLimit(1)
+    }
+
+    @ViewBuilder
+    private var subtitleText: some View {
+        if let subtitle {
+            Text(subtitle)
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.tertiaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+extension PlaceholderView where Glyph == PlaceholderSymbol {
+    init(icon: String, title: String, subtitle: String? = nil, layout: PlaceholderLayout = .automatic) {
+        self.init(title: title, subtitle: subtitle, layout: layout) { PlaceholderSymbol(name: icon) }
+    }
+}
+
+struct PlaceholderSymbol: View {
+    var name: String
+    var color: Color = .white.opacity(0.62)
+
+    var body: some View {
+        Image(systemName: name)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(color)
+    }
+}
+
+/// Значок AirDrop: концентрические дуги, открытые снизу, и точка в центре.
+struct AirDropGlyph: View {
+    var color: Color = .white
+
+    var body: some View {
+        Canvas { context, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let unit = min(size.width, size.height) / 2
+            for radius in [0.42, 0.7, 0.98] {
+                var arc = Path()
+                arc.addRelativeArc(center: center, radius: unit * radius, startAngle: .degrees(125), delta: .degrees(290))
+                context.stroke(arc, with: .color(color), style: StrokeStyle(lineWidth: unit * 0.13, lineCap: .round))
+            }
+            let dot = unit * 0.15
+            context.fill(Path(ellipseIn: CGRect(x: center.x - dot, y: center.y - dot, width: dot * 2, height: dot * 2)), with: .color(color))
+        }
+        .frame(width: 17, height: 17)
     }
 }

@@ -23,6 +23,8 @@ final class ClipboardService {
 
     private(set) var entries: [Entry] = []
     private(set) var isEnabled = true
+    /// Есть ли доступ к папке со скриншотами: nil — ещё не знаем, false — macOS не пускает.
+    private(set) var screenshotAccess: Bool?
 
     private let pasteboard = NSPasteboard.general
     @ObservationIgnored private var lastChangeCount: Int
@@ -31,8 +33,12 @@ final class ClipboardService {
     @ObservationIgnored private var watchedFolder: URL?
     @ObservationIgnored private var knownScreenshots: Set<String> = []
     @ObservationIgnored private var pollTicks = 0
+    @ObservationIgnored private var screenshotsWanted = Pref.bool(Pref.screenshotsInHistory)
     /// Папка, для которой уже запомнили «что было до нас» (старые скриншоты в историю не тащим).
     @ObservationIgnored private var baselineFolder: URL?
+    /// Spotlight сам помечает снимки экрана (kMDItemIsScreenCapture) — где бы они ни сохранялись.
+    @ObservationIgnored private var screenshotQuery: NSMetadataQuery?
+    @ObservationIgnored private var queryObserver: NSObjectProtocol?
     private let limit = 30
     private let imageLimit = 12
 
@@ -92,6 +98,33 @@ final class ClipboardService {
         entries.removeAll()
     }
 
+    /// Кнопка «Проверить»: сразу перечитать буфер и поискать свежие скриншоты,
+    /// не дожидаясь очередного тихого опроса.
+    func checkNow() {
+        if pasteboard.changeCount != lastChangeCount {
+            lastChangeCount = pasteboard.changeCount
+            if isEnabled { capture() }
+        }
+        guard isEnabled, Pref.bool(Pref.screenshotsInHistory) else { return }
+        updateScreenshotWatching()
+        scanScreenshots(delay: .zero)
+        // Spotlight мог уже найти снимок, а уведомление ещё не пришло — смотрим его результаты.
+        if let query = screenshotQuery {
+            query.disableUpdates()
+            let recent: [(String, Date)] = (0..<query.resultCount).compactMap { index in
+                guard let item = query.result(at: index) as? NSMetadataItem,
+                      let path = item.value(forAttribute: NSMetadataItemPathKey) as? String,
+                      let created = item.value(forAttribute: NSMetadataItemFSCreationDateKey) as? Date,
+                      Date().timeIntervalSince(created) < 120 else { return nil }
+                return (path, created)
+            }
+            query.enableUpdates()
+            for (path, created) in recent {
+                addScreenshot(URL(fileURLWithPath: path), created: created)
+            }
+        }
+    }
+
     private func poll() {
         guard !SystemState.screensAsleep else { return }
         let enabled = Pref.bool(Pref.clipboardHistory)
@@ -102,8 +135,13 @@ final class ClipboardService {
         }
         // Запасной путь для скриншотов: раз в 3 секунды сверяем папку (и переподключаемся,
         // если раньше доступа не было), на случай если система не сообщила о новом файле.
+        let wantsScreenshots = Pref.bool(Pref.screenshotsInHistory)
+        if wantsScreenshots != screenshotsWanted {
+            screenshotsWanted = wantsScreenshots
+            updateScreenshotWatching()
+        }
         pollTicks += 1
-        if pollTicks % 3 == 0, enabled, Pref.bool(Pref.screenshotsInHistory) {
+        if pollTicks % 3 == 0, enabled, wantsScreenshots {
             if folderSource == nil || watchedFolder != Self.screenshotFolder { updateScreenshotWatching() }
             scanScreenshots(delay: .zero)
         }
@@ -173,7 +211,7 @@ final class ClipboardService {
         }
     }
 
-    // MARK: - Screenshot files
+    // MARK: - Screenshots
 
     /// Папка, куда macOS сохраняет скриншоты (по умолчанию — рабочий стол).
     nonisolated static var screenshotFolder: URL {
@@ -184,23 +222,33 @@ final class ClipboardService {
         return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
     }
 
+    /// Два независимых способа заметить новый скриншот: Spotlight и слежение за папкой
+    /// (плюс сверка папки раз в 3 секунды из poll()).
     func updateScreenshotWatching() {
         let wanted = isEnabled && Pref.bool(Pref.screenshotsInHistory)
         if !wanted {
             folderSource?.cancel()
             folderSource = nil
             watchedFolder = nil
+            stopScreenshotQuery()
             return
         }
+        startScreenshotQuery()
+
         let folder = Self.screenshotFolder
         guard folderSource == nil || watchedFolder != folder else { return }
         folderSource?.cancel()
         folderSource = nil
         watchedFolder = nil
         let descriptor = open(folder.path, O_EVTONLY)
-        guard descriptor >= 0 else { return }  // нет доступа к папке — попробуем снова из poll()
+        guard descriptor >= 0 else {
+            // Нет доступа к папке — покажем это во вкладке, попробуем снова из poll().
+            if errno == EPERM || errno == EACCES { screenshotAccess = false }
+            return
+        }
         if baselineFolder != folder {
-            knownScreenshots = Set(screenshotFiles(in: folder).map(\.lastPathComponent))
+            let files = screenshotFiles(in: folder)
+            knownScreenshots.formUnion(files.map(\.path))
             baselineFolder = folder
         }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write], queue: .main)
@@ -213,12 +261,68 @@ final class ClipboardService {
         watchedFolder = folder
     }
 
+    /// Сбрасывает запись о доступе к папке и спрашивает заново (после обновления macOS
+    /// может держать разрешение прежней сборки).
+    func fixScreenshotAccess() {
+        Task {
+            await Permissions.reset("SystemPolicyDesktopFolder")
+            let state = await Permissions.requestScreenshotFolder()
+            screenshotAccess = state == .granted
+            if state != .granted { Permissions.openPane("Privacy_AllFiles") }
+            folderSource?.cancel()
+            folderSource = nil
+            watchedFolder = nil
+            updateScreenshotWatching()
+        }
+    }
+
+    private func startScreenshotQuery() {
+        guard screenshotQuery == nil else { return }
+        let query = NSMetadataQuery()
+        query.predicate = NSPredicate(format: "kMDItemIsScreenCapture == 1")
+        query.searchScopes = [NSMetadataQueryUserHomeScope]
+        query.notificationBatchingInterval = 0.4
+        queryObserver = NotificationCenter.default.addObserver(
+            forName: .NSMetadataQueryDidUpdate, object: query, queue: .main
+        ) { [weak self] note in
+            let added = (note.userInfo?[NSMetadataQueryUpdateAddedItemsKey] as? [NSMetadataItem]) ?? []
+            let found: [(String, Date?)] = added.compactMap { item in
+                guard let path = item.value(forAttribute: NSMetadataItemPathKey) as? String else { return nil }
+                return (path, item.value(forAttribute: NSMetadataItemFSCreationDateKey) as? Date)
+            }
+            MainActor.assumeIsolated {
+                for (path, created) in found {
+                    self?.addScreenshot(URL(fileURLWithPath: path), created: created)
+                }
+            }
+        }
+        query.start()
+        screenshotQuery = query
+    }
+
+    private func stopScreenshotQuery() {
+        screenshotQuery?.stop()
+        screenshotQuery = nil
+        if let queryObserver { NotificationCenter.default.removeObserver(queryObserver) }
+        queryObserver = nil
+    }
+
     private func screenshotFiles(in folder: URL) -> [URL] {
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: folder,
-            includingPropertiesForKeys: [.creationDateKey],
-            options: [.skipsHiddenFiles]
-        )) ?? []
+        let files: [URL]
+        do {
+            files = try FileManager.default.contentsOfDirectory(
+                at: folder,
+                includingPropertiesForKeys: [.creationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+            if screenshotAccess != true { screenshotAccess = true }
+        } catch {
+            let code = (error as NSError).code
+            if code == NSFileReadNoPermissionError || (error as NSError).underlyingErrors.contains(where: { ($0 as NSError).code == Int(EPERM) }) {
+                if screenshotAccess != false { screenshotAccess = false }
+            }
+            return []
+        }
         var prefixes = ["Снимок экрана", "Screenshot", "Screen Shot", "Скриншот"]
         // Своё имя для скриншотов (defaults write com.apple.screencapture name …).
         if let custom = UserDefaults(suiteName: "com.apple.screencapture")?.string(forKey: "name"), !custom.isEmpty {
@@ -232,7 +336,7 @@ final class ClipboardService {
     }
 
     private func scanScreenshots(delay: Duration) {
-        guard let folder = watchedFolder ?? (folderSource == nil ? Self.screenshotFolder : nil) else { return }
+        let folder = watchedFolder ?? Self.screenshotFolder
         // Скриншот пишется на диск не мгновенно — проверяем чуть позже.
         Task { @MainActor [weak self] in
             if delay > .zero { try? await Task.sleep(for: delay) }
@@ -240,20 +344,43 @@ final class ClipboardService {
             let files = self.screenshotFiles(in: folder)
             if self.baselineFolder != folder {
                 // Первый просмотр папки — запоминаем то, что уже было, и не тащим старое.
-                self.knownScreenshots = Set(files.map(\.lastPathComponent))
+                self.knownScreenshots.formUnion(files.map(\.path))
                 self.baselineFolder = folder
                 return
             }
-            for url in files where !self.knownScreenshots.contains(url.lastPathComponent) {
-                self.knownScreenshots.insert(url.lastPathComponent)
-                let created = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
-                guard Date().timeIntervalSince(created) < 120, let image = NSImage(contentsOf: url) else { continue }
-                self.removeDuplicates(of: url)
-                var entry = Entry(text: url.deletingPathExtension().lastPathComponent, date: created, appName: "Снимок экрана")
-                entry.image = image
-                entry.fileURL = url
-                self.insert(entry)
+            for url in files where !self.knownScreenshots.contains(url.path) {
+                let created = try? url.resourceValues(forKeys: [.creationDateKey]).creationDate
+                self.addScreenshot(url, created: created)
             }
         }
+    }
+
+    /// Новый скриншот из любого источника (Spotlight или папка). Старые файлы не берём.
+    private func addScreenshot(_ url: URL, created: Date?, attempt: Int = 0) {
+        guard !knownScreenshots.contains(url.path) else { return }
+        let date = created ?? Date()
+        guard Date().timeIntervalSince(date) < 120 else {
+            knownScreenshots.insert(url.path)
+            return
+        }
+        guard let image = NSImage(contentsOf: url) else {
+            if attempt < 3 {
+                // Файл ещё дописывается — попробуем ещё раз чуть позже.
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(800))
+                    self?.addScreenshot(url, created: created, attempt: attempt + 1)
+                }
+            } else if !FileManager.default.isReadableFile(atPath: url.path) {
+                screenshotAccess = false
+            }
+            return
+        }
+        knownScreenshots.insert(url.path)
+        screenshotAccess = true
+        removeDuplicates(of: url)
+        var entry = Entry(text: url.deletingPathExtension().lastPathComponent, date: date, appName: "Снимок экрана")
+        entry.image = image
+        entry.fileURL = url
+        insert(entry)
     }
 }

@@ -6,6 +6,8 @@ enum Pref {
     static let haptics = "haptics"
     static let showMusicActivity = "showMusicActivity"
     static let showChargingActivity = "showChargingActivity"
+    static let showClockActivity = "showClockActivity"
+    static let showShelfActivity = "showShelfActivity"
     static let showLowBattery = "showLowBattery"
     static let trackBanners = "trackBanners"
     static let deviceBanners = "deviceBanners"
@@ -13,7 +15,6 @@ enum Pref {
     static let systemNowPlaying = "systemNowPlaying"
     static let systemNotifications = "systemNotifications"
     static let notchStyle = "notchStyle"
-    static let fxEdgeGlow = "fxEdgeGlow"
     static let fx3D = "fx3D"
     static let fxJelly = "fxJelly"
     static let glassTint = "glassTint"
@@ -33,6 +34,8 @@ enum Pref {
             haptics: true,
             showMusicActivity: true,
             showChargingActivity: true,
+            showClockActivity: true,
+            showShelfActivity: true,
             showLowBattery: true,
             trackBanners: true,
             deviceBanners: true,
@@ -40,7 +43,6 @@ enum Pref {
             systemNowPlaying: true,
             systemNotifications: true,
             notchStyle: "black",
-            fxEdgeGlow: true,
             fx3D: true,
             fxJelly: true,
             glassTint: 0.6,

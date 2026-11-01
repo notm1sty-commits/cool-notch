@@ -10,14 +10,8 @@ struct ChromeState: Equatable {
     var glassStyle = false
     /// 0…1 — насколько тёмное стекло.
     var glassTint: CGFloat = 0.6
-    var edgeEffects = true
     var jelly = true
     var notchSize = CGSize(width: 185, height: 32)
-}
-
-enum ChromeEvent {
-    /// Мягкое свечение по контуру (уведомление / зарядка).
-    case glow(green: Bool)
 }
 
 /// Слой-вью без хит-теста: только картинка.
@@ -41,7 +35,7 @@ final class NotchRootContainer: NSView {
     override var isFlipped: Bool { true }
 }
 
-/// Форма, тень, стекло и свечение чёлки на Core Animation.
+/// Форма, тень и стекло чёлки на Core Animation.
 /// Обновляется каждым кадром пружин без участия SwiftUI.
 @MainActor
 final class NotchChrome {
@@ -65,9 +59,6 @@ final class NotchChrome {
     private let hardwareNotch = CAShapeLayer()
     /// Тонкая ровная граница — только у стекла, чтобы край читался на светлых обоях.
     private let hairline = CAShapeLayer()
-    private let glowContainer = CALayer()
-    private let glowGradient = CAGradientLayer()
-    private let glowMask = CAShapeLayer()
 
     init() {
         let glass = NSVisualEffectView(frame: .zero)
@@ -81,7 +72,7 @@ final class NotchChrome {
         setUpLayers()
     }
 
-    /// Собирает иерархию: тень → стекло → тонировка → SwiftUI → граница и свечение.
+    /// Собирает иерархию: тень → стекло → тонировка → SwiftUI → граница.
     func install(in root: NSView, content: NSView) {
         for view in [backView, glassHost, tintView, contentContainer, frontView] as [NSView] {
             view.frame = root.bounds
@@ -122,16 +113,6 @@ final class NotchChrome {
         hairline.opacity = 0
         frontView.layer?.addSublayer(hairline)
 
-        glowGradient.type = .conic
-        glowGradient.startPoint = CGPoint(x: 0.5, y: 0.5)
-        glowGradient.endPoint = CGPoint(x: 0.5, y: 0)
-        glowContainer.addSublayer(glowGradient)
-        glowMask.fillColor = nil
-        glowMask.strokeColor = NSColor.white.cgColor
-        glowMask.lineWidth = 1.5
-        glowContainer.mask = glowMask
-        glowContainer.opacity = 0
-        frontView.layer?.addSublayer(glowContainer)
     }
 
     // MARK: - Per-frame
@@ -140,11 +121,13 @@ final class NotchChrome {
         let k = scale
         var g = frame.geometry
 
-        // «Желе»: форма чуть-чуть сплющивается и вытягивается от скорости и пружинит обратно.
+        // «Желе»: форма чуть-чуть сплющивается и вытягивается от скорости и пружинит обратно,
+        // а содержимое тянется вместе с ней (от верхнего края по центру).
+        var sx: CGFloat = 1, sy: CGFloat = 1
         if state.jelly {
             let vw = frame.widthVelocity, vh = frame.heightVelocity
-            let sx = 1 + clamp(vw / 16000, 0.02) - clamp(vh / 20000, 0.012)
-            let sy = 1 + clamp(vh / 11000, 0.035) - clamp(vw / 22000, 0.012)
+            sx = 1 + clamp(vw / 16000, 0.02) - clamp(vh / 20000, 0.012)
+            sy = 1 + clamp(vh / 11000, 0.035) - clamp(vw / 22000, 0.012)
             g.width *= sx
             g.height *= sy
         }
@@ -163,16 +146,37 @@ final class NotchChrome {
         tintLayer.path = closed
         glassMask.path = closed
         contentMask.path = closed
+        // Содержимое колышется вместе с плашкой, когда та, вырастая, «выплёскивается» за итоговый
+        // размер (отскок пружины): масштаб = «текущий / целевой», только больше 1 и не больше +6 %.
+        // Пока плашка только растёт к цели, содержимое не сжимаем — иначе оно дёргается.
+        // Когда плашка сжимается (ушёл курсор, закрылась всплывашка), содержимое стоит на месте:
+        // иначе в начале оно скачком увеличивается, а в конце, на отскоке пружины, дёргается.
+        var cx: CGFloat = 1, cy: CGFloat = 1
+        if state.jelly {
+            if frame.targetWidth > frame.originWidth + 0.5 {
+                cx = min(max(g.width / frame.targetWidth, 1), 1.06)
+            }
+            if frame.targetHeight > frame.originHeight + 0.5 {
+                cy = min(max(g.height / frame.targetHeight, 1), 1.06)
+            }
+        }
+        if let layer = contentContainer.layer {
+            if abs(cx - 1) < 0.001 && abs(cy - 1) < 0.001 {
+                layer.sublayerTransform = CATransform3DIdentity
+            } else {
+                // sublayerTransform применяется относительно anchorPoint слоя — учитываем его,
+                // чтобы центр масштаба был точно «верх по центру».
+                let anchor = CGPoint(x: layer.anchorPoint.x * layer.bounds.width, y: layer.anchorPoint.y * layer.bounds.height)
+                let pivot = CGPoint(x: bounds.midX, y: 0)
+                var transform = CATransform3DMakeTranslation(pivot.x - anchor.x, pivot.y - anchor.y, 0)
+                transform = CATransform3DScale(transform, cx, cy, 1)
+                transform = CATransform3DTranslate(transform, anchor.x - pivot.x, anchor.y - pivot.y, 0)
+                layer.sublayerTransform = transform
+            }
+        }
         hairline.path = open
         hairline.lineWidth = k
 
-        let side = max(rect.width, rect.height) * 1.6
-        glowContainer.frame = bounds
-        glowGradient.bounds = CGRect(x: 0, y: 0, width: side, height: side)
-        glowGradient.position = CGPoint(x: rect.midX, y: rect.midY)
-        glowMask.frame = bounds
-        glowMask.path = open
-        glowMask.lineWidth = 1.5 * k
 
         CATransaction.commit()
     }
@@ -202,38 +206,6 @@ final class NotchChrome {
         let notchRect = CGRect(x: (frontView.bounds.width - notchWidth) / 2, y: 0, width: notchWidth, height: newState.notchSize.height * k)
         hardwareNotch.path = NotchShape.cgPath(in: notchRect, top: 6 * k, bottom: 10 * k, closed: true)
         CATransaction.commit()
-    }
-
-    // MARK: - Events
-
-    func fire(_ event: ChromeEvent) {
-        guard state.edgeEffects else { return }
-        switch event {
-        case .glow(let green):
-            // Тонкая линия по контуру плавно проявляется и гаснет, медленно переливаясь.
-            let colors: [NSColor] = green
-                ? [NSColor(red: 0.2, green: 0.84, blue: 0.4, alpha: 1), NSColor(red: 0.62, green: 0.96, blue: 0.62, alpha: 1),
-                   NSColor(red: 0.2, green: 0.84, blue: 0.4, alpha: 1)]
-                : [NSColor(white: 1, alpha: 0.9), NSColor(red: 0.72, green: 0.82, blue: 1, alpha: 1),
-                   NSColor(white: 1, alpha: 0.9)]
-            glowGradient.colors = colors.map(\.cgColor)
-
-            let fade = CAKeyframeAnimation(keyPath: "opacity")
-            fade.values = [0, 0.7, 0.7, 0]
-            fade.keyTimes = [0, 0.25, 0.65, 1]
-            fade.duration = 2
-            fade.timingFunctions = [
-                CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .linear), CAMediaTimingFunction(name: .easeIn),
-            ]
-            glowContainer.add(fade, forKey: "fade")
-
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0
-            spin.toValue = Double.pi * 0.6
-            spin.duration = 2
-            spin.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            glowGradient.add(spin, forKey: "spin")
-        }
     }
 }
 

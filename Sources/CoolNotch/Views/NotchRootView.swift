@@ -22,11 +22,8 @@ private struct NotchContent: View {
         let size = vm.shapeSize
         let simple = reduceMotion || vm.lowPower
 
+        // При перетаскивании файла подсвечивается только сам блок полки, а не весь фон чёлки.
         ZStack(alignment: .top) {
-            if vm.isDropTargeted {
-                Color.white.opacity(0.08)
-                    .transition(.opacity)
-            }
             content(simple: simple)
         }
         .frame(width: size.width + vm.topRadius * 2, height: size.height, alignment: .top)
@@ -34,8 +31,8 @@ private struct NotchContent: View {
         .onDrop(of: [.fileURL], isTargeted: dropBinding) { providers in
             vm.handleDrop(providers)
         }
-        .animation(simple ? Theme.reduced : Theme.content, value: vm.presentation)
-        .animation(Theme.micro, value: vm.isDropTargeted)
+        // Размер содержимого сразу целевой: двигается и колышется только плашка (Core Animation),
+        // а содержимое повторяет её масштабом — так их «желе» совпадает.
     }
 
     @ViewBuilder

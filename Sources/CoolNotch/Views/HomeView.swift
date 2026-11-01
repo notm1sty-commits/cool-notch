@@ -4,9 +4,8 @@ struct HomeView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
-        GeometryReader { geo in
-            content(cardHeight: max(100, geo.size.height - 16))
-        }
+        content(cardHeight: Theme.playerHeight)
+            .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func content(cardHeight: CGFloat) -> some View {
@@ -24,11 +23,8 @@ struct HomeView: View {
                     MediaDeck()
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
             .animation(Theme.content, value: vm.nowPlaying.items.isEmpty)
-
-            TimerCard()
-                .frame(width: 172, height: cardHeight)
         }
     }
 }
@@ -50,8 +46,8 @@ private struct MediaDeck: View {
         let depth = vm.fx3D && !reduceMotion && !vm.lowPower
         GeometryReader { geo in
             let cardWidth = max(220, geo.size.width - 100)
-            let cardHeight = max(100, geo.size.height - 16)
-            VStack(spacing: 4) {
+            let cardHeight = Theme.playerHeight
+            VStack(spacing: 7) {
                 ZStack {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         MediaCard(item: item, depth: depth)
@@ -84,17 +80,19 @@ private struct MediaDeck: View {
                 }
 
                 if items.count > 1 {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                             Capsule()
                                 .fill(Color.white.opacity(index == vm.deckIndex ? 1 : 0.3))
-                                .frame(width: index == vm.deckIndex ? 18 : 6, height: 6)
+                                .frame(width: index == vm.deckIndex ? 13 : 4.5, height: 4.5)
+                                // Попасть по маленькой точке легче: зона нажатия больше самой точки.
+                                .padding(.vertical, 4)
                                 .contentShape(Rectangle())
                                 .onTapGesture { vm.selectDeck(index) }
                                 .help(item.sourceLabel)
                         }
                     }
-                    .frame(height: 10)
+                    .frame(height: 6)
                     .animation(Theme.bouncy, value: vm.deckIndex)
                 }
             }
@@ -202,18 +200,44 @@ private struct MediaCard: View {
     @State var tilt = CGSize.zero
     @State var appeared = false
     @State var opened = false
+    /// Прежняя обложка: новый трек часто приходит без неё, и она догружается чуть позже.
+    /// Пока ждём, показываем прежнюю приглушённой, а не серую заглушку.
+    @State var heldArtwork: NSImage?
+    @State var holdTask: Task<Void, Never>?
+
+    private var shownArtwork: NSImage? { item.artwork ?? heldArtwork }
+    private var switchingNow: Bool { vm.nowPlaying.switching[item.id] != nil }
+    private var direction: CGFloat { CGFloat(vm.nowPlaying.lastSkipDirection) }
+    private var artworkLoading: Bool { switchingNow || (item.artwork == nil && heldArtwork != nil) }
 
     var body: some View {
         HStack(spacing: 14) {
             artwork
             meta
         }
+        .frame(height: Theme.playerHeight)
+        .onChange(of: item.artwork.map { ObjectIdentifier($0) }) { _, _ in holdArtwork() }
         .onAppear {
+            heldArtwork = item.artwork
             if depth {
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.9).delay(0.08)) { appeared = true }
             } else {
                 appeared = true
             }
+        }
+    }
+
+    private func holdArtwork() {
+        holdTask?.cancel()
+        if let image = item.artwork {
+            heldArtwork = image
+            return
+        }
+        // Обложки так и нет — через полторы секунды честно показываем заглушку.
+        holdTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(Theme.track) { heldArtwork = nil }
         }
     }
 
@@ -227,11 +251,14 @@ private struct MediaCard: View {
         let shape = RoundedRectangle(cornerRadius: artRadius, style: .continuous)
         return ZStack {
             ZStack {
-                if let image = item.artwork {
+                if let image = shownArtwork {
+                    // Своя «личность» у каждой картинки — новая обложка плавно проявляется поверх старой.
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fill)
+                        .id(ObjectIdentifier(image))
+                        .transition(.opacity.combined(with: .scale(scale: 1.06)))
                 } else {
                     LinearGradient(colors: [Color(white: 0.24), Color(white: 0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)
                     Image(systemName: item.isVideo ? "play.rectangle.fill" : "music.note")
@@ -241,6 +268,10 @@ private struct MediaCard: View {
                 if item.isVideo { videoOverlay }
             }
             .frame(width: size.width, height: size.height)
+            .brightness(artworkLoading ? -0.14 : 0)
+            .saturation(artworkLoading ? 0.6 : 1)
+            .animation(Theme.track, value: shownArtwork.map { ObjectIdentifier($0) })
+            .animation(Theme.track, value: artworkLoading)
             .clipShape(shape)
             .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
@@ -248,6 +279,9 @@ private struct MediaCard: View {
             .rotation3DEffect(.degrees(depth ? Double(-tilt.height) * 8 : 0), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
             .scaleEffect(item.isPlaying || item.isVideo ? 1 : 0.92)
             .animation(.spring(response: 0.5, dampingFraction: 0.6), value: item.isPlaying)
+            // Нажали «следующий» — обложка чуть «отходит», пока плеер не пришлёт новый трек.
+            .scaleEffect(switchingNow ? 0.95 : 1)
+            .animation(Theme.track, value: switchingNow)
         }
         .frame(width: size.width, height: size.height)
         .scaleEffect(appeared ? 1 : 0.96)
@@ -273,14 +307,6 @@ private struct MediaCard: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let fraction = item.duration > 0 ? min(max(item.position(at: context.date) / item.duration, 0), 1) : 0
             ZStack {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color.black.opacity(0.4)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
-                    .scaleEffect(item.isPlaying ? 0.5 : 1)
-                    .opacity(item.isPlaying ? 0 : 1)
-                    .animation(.spring(response: 0.4, dampingFraction: 0.6), value: item.isPlaying)
                 if item.duration > 0 {
                     Text(TimerService.format(item.duration))
                         .font(.system(size: 9.5, weight: .bold).monospacedDigit())
@@ -307,7 +333,7 @@ private struct MediaCard: View {
     // MARK: Meta
 
     private var meta: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 if let icon = item.sourceIcon {
                     Image(nsImage: icon)
@@ -317,49 +343,79 @@ private struct MediaCard: View {
                 Text(item.sourceLabel)
                     .lineLimit(1)
                     .foregroundStyle(Theme.secondaryText)
+                // «Играет» — цветом обложки, как эквалайзер.
+                let tint = Color(nsColor: item.accent)
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(item.isPlaying ? Theme.liveGreen : Color.white.opacity(0.45))
+                        .fill(item.isPlaying ? tint : Color.white.opacity(0.45))
                         .frame(width: 5, height: 5)
-                        .shadow(color: item.isPlaying ? Theme.liveGreen : .clear, radius: 3)
                     Text(item.isPlaying ? "Играет" : "Пауза")
-                        .foregroundStyle(item.isPlaying ? Theme.liveGreen : Theme.tertiaryText)
+                        .foregroundStyle(item.isPlaying ? tint : Theme.tertiaryText)
                         .contentTransition(.opacity)
                 }
                 .fixedSize()
+                // Цвет «Играет» плавно перетекает вместе с эквалайзером при смене трека.
+                .animation(.easeInOut(duration: 0.8), value: item.accent)
             }
             .font(.system(size: 11, weight: .semibold))
+            .frame(height: 16)
 
             HStack(spacing: 9) {
-                Text(item.title)
-                    .font(.system(size: 18, weight: .semibold))
-                    .tracking(-0.4)
-                    .lineLimit(1)
+                // Новое название въезжает с той стороны, куда листали, старое уезжает в другую.
+                ZStack(alignment: .leading) {
+                    Text(item.title)
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(-0.4)
+                        .lineLimit(1)
+                        .id(item.title)
+                        .transition(TrackSlide(direction: direction))
+                }
+                .modifier(SwitchingLook(active: switchingNow, direction: direction))
                 if item.isPlaying {
                     EqualizerView(color: item.accent, isPlaying: true, lowPower: vm.lowPower)
                         .frame(width: 20, height: 12)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            .padding(.top, 3)
+            .frame(height: 24)
+            .padding(.top, 4)
+            .animation(Theme.track, value: item.title)
+            .animation(Theme.track, value: switchingNow)
 
-            Text(item.subtitle.isEmpty ? " " : item.subtitle)
-                .font(.system(size: 13.5))
-                .foregroundStyle(Theme.secondaryText)
-                .lineLimit(1)
+            if let issue = vm.nowPlaying.controlIssues[item.id] {
+                ControlIssueRow(issue: issue) { vm.nowPlaying.enableBrowserJavaScript(for: item) }
+                    .frame(height: 18, alignment: .leading)
+                    .transition(.opacity)
+            } else {
+                ZStack(alignment: .leading) {
+                    Text(item.subtitle.isEmpty ? " " : item.subtitle)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
+                        .id(item.subtitle)
+                        .transition(TrackSlide(direction: direction, distance: 12))
+                }
+                .frame(height: 18)
+                .modifier(SwitchingLook(active: switchingNow, direction: direction))
+                // Исполнитель — на долю мгновения позже названия: смена читается как одно движение.
+                .animation(Theme.track.delay(0.03), value: item.subtitle)
+                .animation(Theme.track, value: switchingNow)
+            }
 
             ProgressRow(item: item)
-                .padding(.top, 9)
+                .frame(height: 14)
+                .padding(.top, 8)
 
             controls
-                .padding(.top, 5)
+                .frame(height: 32)
+                .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Theme.content, value: item.isPlaying)
     }
 
     private var controls: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
             controlButton(item.isVideo ? "gobackward.10" : "backward.fill", help: item.isVideo ? "Назад на 10 секунд" : "Предыдущий трек") {
                 vm.nowPlaying.skip(item, forward: false)
             }
@@ -367,17 +423,36 @@ private struct MediaCard: View {
                 vm.nowPlaying.toggle(item)
             } label: {
                 Image(systemName: item.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 42, height: 42)
-                    .glass(21)
+                    .frame(width: 32, height: 32)
+                    .glass(16)
             }
             .buttonStyle(PressableButtonStyle(scale: 0.84))
             .help(item.isPlaying ? "Пауза" : "Играть")
             controlButton(item.isVideo ? "goforward.10" : "forward.fill", help: item.isVideo ? "Вперёд на 10 секунд" : "Следующий трек") {
                 vm.nowPlaying.skip(item, forward: true)
             }
-            Spacer(minLength: 0)
+            if let mode = item.repeatMode {
+                Button {
+                    vm.nowPlaying.cycleRepeat(item)
+                } label: {
+                    Image(systemName: mode.symbol)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(mode == .off ? Color.white.opacity(0.4) : Color(nsColor: item.accent))
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(Color.white.opacity(mode == .off ? 0 : 0.1)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(PressableButtonStyle(scale: 0.8))
+                .help(mode.help)
+                .animation(Theme.micro, value: mode)
+                .transition(.opacity)
+            }
+            VolumeControl(volume: vm.volume, tint: Color(nsColor: item.accent))
+                .padding(.leading, 10)
+            Spacer(minLength: 8)
             Button {
                 vm.nowPlaying.open(item)
                 withAnimation(Theme.bouncy) { opened = true }
@@ -402,18 +477,201 @@ private struct MediaCard: View {
             }
             .buttonStyle(PressableButtonStyle(scale: 0.92))
             .help(item.isVideo ? "Перейти к вкладке с видео" : "Открыть плеер")
+
+            Button {
+                withAnimation(Theme.content) { vm.nowPlaying.dismiss(item) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.white.opacity(0.09)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(PressableButtonStyle(scale: 0.85))
+            .padding(.leading, 4)
+            .help("Убрать из чёлки — вернётся, когда снова заиграет")
         }
     }
 
     private func controlButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 32, height: 32)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .frame(width: 26, height: 26)
                 .contentShape(Circle())
         }
         .buttonStyle(PressableButtonStyle(scale: 0.8))
         .help(help)
+    }
+}
+
+/// Громкость Мака: значок (нажми — без звука) и тонкий ползунок. Тянуть можно за любую точку.
+private struct VolumeControl: View {
+    let volume: SystemVolume
+    var tint: Color
+
+    @State private var hovering = false
+    @State private var dragging = false
+
+    private var symbol: String {
+        if volume.isMuted || volume.level < 0.01 { return "speaker.slash.fill" }
+        if volume.level < 0.34 { return "speaker.wave.1.fill" }
+        if volume.level < 0.67 { return "speaker.wave.2.fill" }
+        return "speaker.wave.3.fill"
+    }
+
+    var body: some View {
+        if volume.isAvailable {
+            HStack(spacing: 7) {
+                Button {
+                    volume.toggleMute()
+                } label: {
+                    Image(systemName: symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .contentTransition(.symbolEffect(.replace))
+                        .frame(width: 20, height: 26, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableButtonStyle(scale: 0.85))
+                .help(volume.isMuted ? "Включить звук" : "Выключить звук")
+
+                GeometryReader { geo in
+                    let fraction = CGFloat(volume.isMuted ? 0 : volume.level)
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.16))
+                        Capsule()
+                            .fill(hovering || dragging ? tint : Color.white.opacity(0.85))
+                            .frame(width: max(0, geo.size.width * fraction))
+                    }
+                    .frame(height: hovering || dragging ? 6 : 4)
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                dragging = true
+                                volume.set(Float(min(max(value.location.x / geo.size.width, 0), 1)))
+                            }
+                            .onEnded { _ in dragging = false }
+                    )
+                }
+                .frame(width: 84, height: 26)
+                .onHover { inside in withAnimation(Theme.micro) { hovering = inside } }
+                .animation(Theme.micro, value: hovering || dragging)
+                .help("Громкость Мака: \(Int((volume.isMuted ? 0 : volume.level) * 100))%")
+            }
+        }
+    }
+}
+
+/// Почему кнопка не сработала — одной строкой вместо исполнителя. Полный текст всплывает,
+/// если задержать на ней курсор (обычные подсказки в окне чёлки macOS не показывает).
+private struct ControlIssueRow: View {
+    let issue: NowPlayingService.ControlIssue
+    var enable: () -> Void
+
+    @State private var hovering = false
+    @State private var showBubble = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if issue == .enablingJavaScript {
+                ProgressView().controlSize(.mini)
+            }
+            Text(short)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Theme.orange)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let button {
+                Button(button.title, action: button.action)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 8)
+                    .frame(height: 18)
+                    .background(Capsule().fill(Color.white))
+                    .fixedSize()
+            }
+        }
+        .frame(height: 18)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+            if inside {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(350))
+                    if hovering { withAnimation(Theme.micro) { showBubble = true } }
+                }
+            } else {
+                withAnimation(Theme.micro) { showBubble = false }
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if showBubble {
+                Text(full)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 250, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(white: 0.13))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5))
+                    )
+                    .offset(y: -24)
+                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .bottomLeading)))
+                    .allowsHitTesting(false)
+            }
+        }
+        .zIndex(10)
+    }
+
+    private var short: String {
+        switch issue {
+        case .browserJavaScript: return "Нужен JavaScript в браузере"
+        case .enablingJavaScript: return "Включаю в меню браузера…"
+        case .browserJavaScriptManual: return "Включи JavaScript в меню браузера"
+        case .browserAutomation: return "Нет доступа к браузеру"
+        case .noTab: return "Не нашёл вкладку с видео"
+        case .failed: return "Браузер ответил ошибкой"
+        case .notCurrent: return "Нажми ⏯ в самом приложении"
+        }
+    }
+
+    private var full: String {
+        switch issue {
+        case .browserJavaScript:
+            return "macOS управляет только «текущим» плеером. Чтобы запускать и перематывать видео из чёлки, когда играет другое, браузер должен разрешать JavaScript из Apple Events. «Включить» сделает это само."
+        case .enablingJavaScript:
+            return "Нажимаю пункт «Разрешить JavaScript из Apple Events» в меню браузера."
+        case .browserJavaScriptManual:
+            return "Не получилось нажать пункт меню автоматически. В браузере: «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events» (в Safari — меню «Разработка»)."
+        case .browserAutomation:
+            return "macOS не разрешает Halo управлять этим браузером. «Настройки» откроет «Конфиденциальность» → «Автоматизация»: включи там браузер под Halo."
+        case .noTab:
+            return "Не нашёл открытую вкладку с этим видео. Если вкладку закрыли или перезагрузили — карточка обновится сама."
+        case .failed(let message):
+            return "Браузер ответил: \(message)"
+        case .notCurrent:
+            return "macOS отдаёт команды только «текущему» плееру, а у этого приложения нет своего управления. Нажми ⏯ в самом приложении — после этого им можно управлять из чёлки."
+        }
+    }
+
+    private var button: (title: String, action: () -> Void)? {
+        switch issue {
+        case .browserJavaScript, .browserJavaScriptManual:
+            return ("Включить", enable)
+        case .browserAutomation:
+            return ("Настройки", { Permissions.openPane("Privacy_Automation") })
+        default:
+            return nil
+        }
     }
 }
 
@@ -560,167 +818,5 @@ private struct EmptyMusicView: View {
             }
             Spacer(minLength: 0)
         }
-    }
-}
-
-// MARK: - Timer
-
-private struct TimerCard: View {
-    @Environment(NotchViewModel.self) var vm
-    @AppStorage("timerPresetSeconds") var preset = 300
-    @State var editing = false
-    @State var draft = ""
-    @FocusState var fieldFocused: Bool
-
-    private static let presets = [5, 15, 25, 45]
-
-    var body: some View {
-        let timer = vm.timer
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Таймер").sectionLabelStyle()
-                Spacer()
-                if timer.isActive {
-                    Text(TimerService.durationText(timer.total)).sectionLabelStyle()
-                        .transition(.opacity)
-                }
-            }
-
-            if timer.isActive {
-                Text(timer.remainingText)
-                    .font(.system(size: 32, weight: .regular).monospacedDigit())
-                    .tracking(-0.5)
-                    .foregroundStyle(Theme.orange)
-                    .contentTransition(.numericText(countsDown: true))
-                    .animation(Theme.micro, value: timer.remainingText)
-                Spacer(minLength: 0)
-                Capsule()
-                    .fill(Theme.orange.opacity(0.2))
-                    .frame(height: 4)
-                    .overlay(alignment: .leading) {
-                        GeometryReader { geo in
-                            Capsule()
-                                .fill(Theme.orange)
-                                .frame(width: geo.size.width * timer.progress)
-                                .animation(.linear(duration: 0.5), value: timer.progress)
-                        }
-                    }
-                Spacer(minLength: 0)
-                HStack(spacing: 8) {
-                    pill(systemName: "xmark", tint: .white, help: "Отменить") {
-                        withAnimation(Theme.content) { timer.stop() }
-                    }
-                    pill(systemName: timer.state == .paused ? "play.fill" : "pause.fill", tint: Theme.orange, help: "Пауза") {
-                        timer.toggle()
-                    }
-                }
-            } else {
-                HStack(spacing: 4) {
-                    stepButton("minus") { adjust(-60) }
-                    timeField
-                        .frame(maxWidth: .infinity)
-                    stepButton("plus") { adjust(60) }
-                }
-                HStack(spacing: 4) {
-                    ForEach(Self.presets, id: \.self) { minutes in
-                        Button {
-                            withAnimation(Theme.micro) { preset = minutes * 60 }
-                        } label: {
-                            Text("\(minutes)")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(preset == minutes * 60 ? Theme.orange : .white)
-                                .frame(maxWidth: .infinity, minHeight: 22)
-                                .background(Capsule().fill(preset == minutes * 60 ? Theme.orange.opacity(0.24) : Color.white.opacity(0.1)))
-                        }
-                        .buttonStyle(PressableButtonStyle(scale: 0.88))
-                    }
-                }
-                Spacer(minLength: 0)
-                Button {
-                    commitDraft()
-                    withAnimation(Theme.content) { timer.start(seconds: TimeInterval(preset)) }
-                } label: {
-                    Text("Старт")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Theme.orange)
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(Capsule().fill(Theme.orange.opacity(0.24)))
-                }
-                .buttonStyle(PressableButtonStyle(scale: 0.94))
-            }
-        }
-        .padding(13)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glass(Theme.cardRadius)
-        .animation(Theme.content, value: timer.isActive)
-    }
-
-    /// Цифры: клик — ввод с клавиатуры («90» — 90 минут, «1:30» — 1 мин 30 с, «1:30:00» — 1,5 часа).
-    @ViewBuilder
-    private var timeField: some View {
-        if editing {
-            TextField("мм или мм:сс", text: $draft)
-                .textFieldStyle(.plain)
-                .font(.system(size: 26, weight: .light).monospacedDigit())
-                .multilineTextAlignment(.center)
-                .focused($fieldFocused)
-                .onSubmit { commitDraft() }
-                .onAppear {
-                    fieldFocused = true
-                    vm.beginTyping()
-                }
-                .onChange(of: fieldFocused) { _, focused in
-                    if !focused { commitDraft() }
-                }
-        } else {
-            Text(TimerService.format(TimeInterval(preset)))
-                .font(.system(size: 28, weight: .light).monospacedDigit())
-                .contentTransition(.numericText())
-                .animation(Theme.micro, value: preset)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    draft = ""
-                    editing = true
-                }
-                .help("Нажми, чтобы ввести любое время")
-        }
-    }
-
-    private func adjust(_ delta: Int) {
-        withAnimation(Theme.micro) { preset = min(max(preset + delta, 60), 24 * 3600) }
-    }
-
-    private func commitDraft() {
-        guard editing else { return }
-        editing = false
-        vm.endTyping()
-        if let seconds = TimerService.parse(draft) {
-            withAnimation(Theme.micro) { preset = seconds }
-        }
-    }
-
-    private func stepButton(_ symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 24, height: 24)
-                .glass(12)
-        }
-        .buttonStyle(PressableButtonStyle(scale: 0.85))
-    }
-
-    private func pill(systemName: String, tint: Color, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12, weight: .bold))
-                .contentTransition(.symbolEffect(.replace))
-                .foregroundStyle(tint)
-                .frame(maxWidth: .infinity, minHeight: 30)
-                .background(Capsule().fill(tint == .white ? Color.white.opacity(0.14) : tint.opacity(0.24)))
-        }
-        .buttonStyle(PressableButtonStyle(scale: 0.92))
-        .help(help)
     }
 }

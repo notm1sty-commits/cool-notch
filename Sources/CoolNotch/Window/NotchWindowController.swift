@@ -14,9 +14,15 @@ final class NotchWindowController {
     private var observers: [NSObjectProtocol] = []
     private var pollTimer: Timer?
 
-    private var mouseIsDown = false
+    /// Зажата ли левая кнопка прямо сейчас. Спрашиваем систему, а не запоминаем по событиям:
+    /// кнопки окон, переключатели и ползунки «съедают» отпускание кнопки, и чёлка думала,
+    /// что кнопка всё ещё зажата, — и не раскрывалась, пока не кликнешь.
+    private var mouseIsDown: Bool { NSEvent.pressedMouseButtons & 1 != 0 }
     private var dragStartChangeCount = 0
     private var isFileDragging = false
+    /// Накопленный горизонтальный сдвиг двумя/тремя пальцами — для переключения карточек.
+    private var swipeAccumulator: CGFloat = 0
+    private var swipeFired = false
 
     private let isDemo: Bool
 
@@ -49,9 +55,6 @@ final class NotchWindowController {
         viewModel.motion.onFrame = { [weak self] frame in
             self?.chrome.render(frame)
         }
-        viewModel.onChromeEvent = { [weak self] event in
-            self?.chrome.fire(event)
-        }
         viewModel.onRequestKeyboard = { [weak self] in
             self?.takeKeyboard()
         }
@@ -72,6 +75,13 @@ final class NotchWindowController {
         ) { [weak self] _ in
             Task { @MainActor in self?.reposition() }
         })
+        // Пока активен сам Halo (например, только что закрыли настройки), глобальный
+        // монитор мыши молчит — тогда следим за курсором опросом.
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.updatePolling() }
+            })
+        }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
@@ -125,12 +135,17 @@ final class NotchWindowController {
         }) {
             monitors.append(local)
         }
+        // Свайп по чёлке влево/вправо листает то, что играет (музыка, видео…).
+        if let swipes = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .swipe], handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.handleSwipe(event) ?? event }
+        }) {
+            monitors.append(swipes)
+        }
     }
 
     private func handle(_ type: NSEvent.EventType, local: Bool) {
         switch type {
         case .leftMouseDown, .rightMouseDown:
-            mouseIsDown = type == .leftMouseDown
             dragStartChangeCount = NSPasteboard(name: .drag).changeCount
             isFileDragging = false
             // Клик мимо открытой чёлки — закрываем.
@@ -138,7 +153,6 @@ final class NotchWindowController {
                 viewModel.close()
             }
         case .leftMouseUp:
-            mouseIsDown = false
             isFileDragging = false
         case .leftMouseDragged:
             let pasteboard = NSPasteboard(name: .drag)
@@ -151,6 +165,40 @@ final class NotchWindowController {
             break
         }
         updateHover()
+    }
+
+    /// Трёхпальцевый свайп (если он не занят переключением рабочих столов) или горизонтальная
+    /// прокрутка двумя пальцами над открытой чёлкой на вкладке «Главная».
+    private func handleSwipe(_ event: NSEvent) -> NSEvent? {
+        guard viewModel.isOpen, viewModel.hoverZone.contains(NSEvent.mouseLocation) else { return event }
+        // На полке с длинным рядом файлов горизонтальная прокрутка нужна самому ряду.
+        if viewModel.tab == .shelf, viewModel.shelf.items.count > 5 { return event }
+        if event.type == .swipe {
+            guard event.deltaX != 0 else { return event }
+            viewModel.swipe(next: event.deltaX > 0)
+            return nil
+        }
+        guard event.hasPreciseScrollingDeltas else { return event }  // только трекпад
+        let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+        switch event.phase {
+        case .began:
+            swipeAccumulator = 0
+            swipeFired = false
+        case .changed:
+            guard !swipeFired, horizontal else { break }
+            swipeAccumulator += event.scrollingDeltaX
+            if abs(swipeAccumulator) > 45 {
+                swipeFired = true
+                // Пальцы влево — следующая карточка, как перелистывание на iPhone.
+                let fingersLeft = event.isDirectionInvertedFromDevice ? swipeAccumulator < 0 : swipeAccumulator > 0
+                viewModel.swipe(next: fingersLeft)
+            }
+        case .ended, .cancelled:
+            swipeAccumulator = 0
+        default:
+            break
+        }
+        return horizontal ? nil : event
     }
 
     private func updateHover() {
@@ -172,7 +220,7 @@ final class NotchWindowController {
 
     /// Пока чёлка открыта, дополнительно опрашиваем мышь — надёжно ловим уход курсора.
     private func updatePolling() {
-        if viewModel.isOpen || viewModel.isHovering {
+        if viewModel.isOpen || viewModel.isHovering || NSApp.isActive {
             guard pollTimer == nil else { return }
             pollTimer = Timer.coalesced(interval: 1.0 / 12.0, tolerance: 0.2) { [weak self] in
                 self?.updateHover()

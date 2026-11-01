@@ -5,9 +5,9 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>ru</string>
 	<key>CFBundleName</key>
-	<string>Cool Notch</string>
+	<string>Halo</string>
 	<key>CFBundleDisplayName</key>
-	<string>Cool Notch</string>
+	<string>Halo</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.notm1sty.coolnotch</string>
 	<key>CFBundleExecutable</key>
@@ -29,7 +29,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Cool Notch показывает, что играет в Spotify, Музыке и в браузере (Яндекс Музыка, YouTube), и позволяет управлять воспроизведением прямо из чёлки.</string>
+	<string>Halo показывает, что играет в Spotify, Музыке и в браузере (Яндекс Музыка, YouTube), и позволяет управлять воспроизведением прямо из чёлки.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© notm1sty</string>
 </dict>

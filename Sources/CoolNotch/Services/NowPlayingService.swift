@@ -58,10 +58,14 @@ struct MediaItem: Identifiable, Equatable {
     var sourceLabel: String
     var sourceIcon: NSImage?
     var isVideo: Bool
+    /// Скорость воспроизведения (1 — обычная, 2 — видео на 2x).
+    var rate: Double = 1
+    /// Повтор; nil — плеер его не поддерживает (кнопки нет).
+    var repeatMode: RepeatMode?
 
     func position(at date: Date) -> Double {
         guard isPlaying else { return elapsed }
-        let value = elapsed + date.timeIntervalSince(timestamp)
+        let value = elapsed + date.timeIntervalSince(timestamp) * rate
         return duration > 0 ? min(value, duration) : value
     }
 
@@ -69,7 +73,34 @@ struct MediaItem: Identifiable, Equatable {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.subtitle == rhs.subtitle
             && lhs.duration == rhs.duration && lhs.elapsed == rhs.elapsed && lhs.timestamp == rhs.timestamp
             && lhs.isPlaying == rhs.isPlaying && lhs.artwork === rhs.artwork && lhs.backdrop === rhs.backdrop
-            && lhs.sourceLabel == rhs.sourceLabel && lhs.isVideo == rhs.isVideo
+            && lhs.sourceLabel == rhs.sourceLabel && lhs.isVideo == rhs.isVideo && lhs.rate == rhs.rate
+            && lhs.repeatMode == rhs.repeatMode
+    }
+}
+
+/// Режим повтора — те же номера, что у системного «Что играет».
+enum RepeatMode: Int, Sendable {
+    case off = 1
+    case one = 2
+    case all = 3
+
+    /// Порядок по нажатию: выкл → весь альбом/плейлист → один трек → выкл.
+    var next: RepeatMode {
+        switch self {
+        case .off: return .all
+        case .all: return .one
+        case .one: return .off
+        }
+    }
+
+    var symbol: String { self == .one ? "repeat.1" : "repeat" }
+
+    var help: String {
+        switch self {
+        case .off: return "Повтор выключен — нажми, чтобы повторять альбом или плейлист"
+        case .all: return "Повтор альбома/плейлиста — нажми, чтобы повторять один трек"
+        case .one: return "Повтор одного трека — нажми, чтобы выключить"
+        }
     }
 }
 
@@ -104,6 +135,22 @@ private struct MediaCandidate {
     var isLive = true
     /// Когда источник последний раз прислал данные.
     var lastUpdate = Date()
+    /// Скорость воспроизведения: на 2x время в чёлке идёт вдвое быстрее.
+    var rate: Double = 1
+    /// Пришёл из списка всех клиентов «Что играет» (а не от выбранного системой плеера).
+    var fromClients = false
+    var repeatMode: RepeatMode?
+
+    func position(at date: Date) -> Double {
+        let value = elapsed + (isPlaying ? date.timeIntervalSince(elapsedTimestamp) * rate : 0)
+        return track.duration > 0 ? min(value, track.duration) : value
+    }
+}
+
+private struct ArtworkLook {
+    let image: NSImage
+    let accent: NSColor
+    let backdrop: NSImage?
 }
 
 /// Команда, которую только что отдал пользователь: пока источник не подтвердил её,
@@ -164,15 +211,56 @@ final class NowPlayingService {
     private(set) var sourceIcon: NSImage?
     private(set) var elapsed: Double = 0
     private(set) var elapsedTimestamp = Date()
+    private(set) var rate: Double = 1
     private(set) var externalPlayer: ExternalPlayer?
     private(set) var canControlAnyPlayer = false
     private(set) var browserNeedsSetup = false
     /// Все источники для карусели: сначала играющее (последнее запущенное), затем стоящее на паузе.
     private(set) var items: [MediaItem] = []
+    /// Что сейчас видит системный «Что играет» — для строки диагностики в настройках.
+    private(set) var systemStatus = "Ждём данные…"
+    /// Какие приложения вообще сообщают о воспроизведении (режим «все плееры»).
+    private(set) var otherPlayersStatus: String?
+    var readsAllPlayers: Bool { bridge.readsAllClients }
 
     @ObservationIgnored var onTrackChange: (@MainActor (NowPlayingTrack) -> Void)?
-    /// Вкладкой браузера нельзя управлять напрямую: выключен «JavaScript из Apple Events».
-    @ObservationIgnored var onBrowserControlUnavailable: (@MainActor (BrowserKind) -> Void)?
+    /// Почему не получилось управлять карточкой — показывается прямо на ней.
+    enum ControlIssue: Equatable {
+        /// Браузер не пускает JavaScript — можно включить одной кнопкой.
+        case browserJavaScript(BrowserKind)
+        /// Включаем пункт в меню браузера.
+        case enablingJavaScript
+        /// Включить автоматически не вышло — подсказываем, где пункт меню.
+        case browserJavaScriptManual(BrowserKind)
+        /// macOS не разрешает Halo управлять этим браузером («Автоматизация»).
+        case browserAutomation(BrowserKind)
+        /// Не нашли вкладку с этим видео.
+        case noTab
+        /// Браузер ответил ошибкой — показываем её как есть.
+        case failed(String)
+        /// macOS отдаёт команды только «текущему» плееру, а у этого приложения нет своего управления.
+        case notCurrent
+    }
+
+    private(set) var controlIssues: [PlayerSource: ControlIssue] = [:]
+    /// Нажали «следующий/предыдущий» и ждём новый трек: источник → направление (+1 / −1).
+    /// Карточка сразу показывает, что трек меняется, а не стоит как была.
+    private(set) var switching: [PlayerSource: Int] = [:]
+    /// Куда листали в последний раз — в ту сторону и уезжает старое название.
+    private(set) var lastSkipDirection = 1
+    @ObservationIgnored private var switchingFrom: [PlayerSource: String] = [:]
+    /// Только что переключили повтор — пока плеер не подтвердил, показываем выбранный режим.
+    @ObservationIgnored private var pendingRepeat: [PlayerSource: (mode: RepeatMode, until: Date)] = [:]
+    @ObservationIgnored private var switchTimeouts: [PlayerSource: Task<Void, Never>] = [:]
+    /// Почему последняя команда вкладке не сработала.
+    @ObservationIgnored private var lastBrowserFailure: [PlayerSource: BrowserMediaSource.ControlResult] = [:]
+    /// Какой трек мы уже объявляли для каждого источника: баннер только при настоящей смене
+    /// трека, а не когда macOS переключает «главный» плеер туда-сюда.
+    @ObservationIgnored private var announced: [PlayerSource: String] = [:]
+    @ObservationIgnored private var lastAnnouncedTitle = ""
+    @ObservationIgnored private var lastAnnouncedAt = Date.distantPast
+    /// Какая картинка пришла с каким треком — чтобы распознать «залипшую» обложку.
+    @ObservationIgnored private var artworkFingerprints: [PlayerSource: (hash: Int, track: String, album: String)] = [:]
     @ObservationIgnored private var pending: [PlayerSource: PendingPlayback] = [:]
     @ObservationIgnored private var settleTask: Task<Void, Never>?
 
@@ -188,8 +276,12 @@ final class NowPlayingService {
     @ObservationIgnored private var pollTimer: Timer?
     @ObservationIgnored private let launchDate = Date()
     @ObservationIgnored private var iconCache: [String: NSImage] = [:]
-    @ObservationIgnored private var backdropCache: [ObjectIdentifier: NSImage] = [:]
-    @ObservationIgnored private var accentCache: [ObjectIdentifier: NSColor] = [:]
+    /// Цвет и размытый фон для каждой обложки — считаются один раз и общие для свёрнутой
+    /// и раскрытой чёлки. Кэш держит саму картинку, поэтому её адрес не может достаться
+    /// новой обложке (раньше из-за этого цвет эквалайзера иногда был от другого трека).
+    @ObservationIgnored private var looks: [ObjectIdentifier: ArtworkLook] = [:]
+    /// Последний цвет обложки каждого источника — пока новая обложка догружается.
+    @ObservationIgnored private var lastAccent: [PlayerSource: NSColor] = [:]
 
     init() {
         runner = AppleScriptRunner()
@@ -238,7 +330,7 @@ final class NowPlayingService {
     func position(at date: Date) -> Double {
         let duration = track?.duration ?? 0
         guard isPlaying else { return elapsed }
-        let value = elapsed + date.timeIntervalSince(elapsedTimestamp)
+        let value = elapsed + date.timeIntervalSince(elapsedTimestamp) * rate
         return duration > 0 ? min(value, duration) : value
     }
 
@@ -264,37 +356,179 @@ final class NowPlayingService {
 
     // MARK: - Per-item commands
 
-    /// Пауза/воспроизведение конкретной карточки. Запуск одной ставит остальные на паузу — как в системе.
-    /// Команды явные (play/pause, а не «переключить») и адресованы именно этому источнику.
+    /// Пауза/воспроизведение конкретной карточки. Запуск одной ставит остальные на паузу — как в системе,
+    /// но только когда она действительно запустилась. Если управлять не получилось, карточка
+    /// возвращается в прежнее состояние и объясняет почему (а не «играет» с бегущим временем).
     func toggle(_ item: MediaItem) {
         let willPlay = !item.isPlaying
         let now = Date()
-        if willPlay {
-            for other in items where other.isPlaying && other.id != item.id {
-                markLocal(other.id, playing: false, at: now)
-                if !isDemo { setPlayback(other.id, playing: false) }
+        if isDemo {
+            if willPlay {
+                for other in items where other.isPlaying && other.id != item.id { markLocal(other.id, playing: false, at: now) }
+            }
+            markLocal(item.id, playing: willPlay, at: now)
+            recompute()
+            return
+        }
+
+        guard willPlay else {
+            markLocal(item.id, playing: false, at: now)
+            recompute()
+            setPlayback(item.id, playing: false) { [weak self] succeeded in
+                guard let self, !succeeded else { return }
+                self.commandFailed(item, revertTo: true)
+            }
+            return
+        }
+
+        // Сначала ставим на паузу то, что играет, — пока системная команда ещё попадает именно в него.
+        // Если сначала запустить видео, macOS может сделать главным уже его, и «пауза» музыке
+        // остановила бы само видео (отсюда и метания «играет музыка / играет видео»).
+        let others = items.filter { $0.isPlaying && $0.id != item.id }
+        for other in others {
+            markLocal(other.id, playing: false, at: now)
+            setPlayback(other.id, playing: false)
+        }
+        markLocal(item.id, playing: true, at: now)
+        recompute()
+
+        let start = { [weak self] in
+            guard let self else { return }
+            self.setPlayback(item.id, playing: true) { [weak self] succeeded in
+                guard let self else { return }
+                if succeeded {
+                    self.controlIssues[item.id] = nil
+                    return
+                }
+                // Не вышло — возвращаем как было: то, что играло, снова играет.
+                for other in others {
+                    self.markLocal(other.id, playing: true, at: Date())
+                    self.setPlayback(other.id, playing: true)
+                }
+                self.commandFailed(item, revertTo: false)
             }
         }
-        markLocal(item.id, playing: willPlay, at: now)
-        recompute()
-        if isDemo { return }
-        setPlayback(item.id, playing: willPlay) { [weak self] succeeded in
-            guard let self, !succeeded else { return }
-            // Напрямую не получилось (браузер не пускает JavaScript) — показываем вкладку, дальше сам.
-            self.pending[item.id] = nil
-            self.open(item)
-            if let kind = item.id.browserKind { self.onBrowserControlUnavailable?(kind) }
-            self.scheduleRefresh()
+        if others.isEmpty {
+            start()
+        } else {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(300))
+                start()
+            }
         }
+    }
+
+    /// Команда не дошла: откатываем состояние и показываем причину на карточке.
+    private func commandFailed(_ item: MediaItem, revertTo playing: Bool) {
+        pending[item.id] = nil
+        if var candidate = candidates[item.id] {
+            candidate.isPlaying = playing
+            candidate.elapsedTimestamp = Date()
+            candidates[item.id] = candidate
+        }
+        if let kind = item.id.browserKind {
+            switch lastBrowserFailure[item.id] {
+            case .notAuthorized?: controlIssues[item.id] = .browserAutomation(kind)
+            case .noTab?: controlIssues[item.id] = .noTab
+            case .failed(let message)?: controlIssues[item.id] = .failed(message)
+            default: controlIssues[item.id] = .browserJavaScript(kind)
+            }
+        } else {
+            controlIssues[item.id] = .notCurrent
+        }
+        recompute()
+    }
+
+    /// Включает в браузере «Разрешить JavaScript из Apple Events» через его меню (нужны
+    /// «Универсальный доступ» и разрешение управлять System Events). После этого видео
+    /// во вкладках управляется из чёлки, даже когда «текущий» плеер в системе другой.
+    func enableBrowserJavaScript(for item: MediaItem) {
+        guard let kind = item.id.browserKind else { return }
+        let previous = NSWorkspace.shared.frontmostApplication
+        controlIssues[item.id] = .enablingJavaScript
+        let script = """
+        tell application id "\(kind.bundleID)" to activate
+        delay 0.4
+        tell application "System Events"
+            set p to first application process whose bundle identifier is "\(kind.bundleID)"
+            repeat with barItem in menu bar items of menu bar 1 of p
+                try
+                    repeat with entry in menu items of menu 1 of barItem
+                        try
+                            set n to name of entry
+                            if n is not missing value and n contains "JavaScript" and n contains "Apple" then
+                                if (value of attribute "AXMenuItemMarkChar" of entry) is missing value then click entry
+                                return "ok"
+                            end if
+                            repeat with sub in menu items of menu 1 of entry
+                                set n2 to name of sub
+                                if n2 is not missing value and n2 contains "JavaScript" and n2 contains "Apple" then
+                                    if (value of attribute "AXMenuItemMarkChar" of sub) is missing value then click sub
+                                    return "ok"
+                                end if
+                            end repeat
+                        end try
+                    end repeat
+                end try
+            end repeat
+        end tell
+        return "notfound"
+        """
+        runner.run(script, parse: { $0.stringValue }) { [weak self] result in
+            guard let self else { return }
+            if let previous, previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previous.activate()
+            }
+            guard result == "ok" else {
+                self.controlIssues[item.id] = .browserJavaScriptManual(kind)
+                return
+            }
+            // Получилось — сразу выполняем то, что пользователь хотел: запускаем видео.
+            for (source, issue) in self.controlIssues where issue == .enablingJavaScript || issue == .browserJavaScript(kind) {
+                self.controlIssues[source] = nil
+            }
+            if let fresh = self.items.first(where: { $0.id == item.id }), !fresh.isPlaying {
+                self.toggle(fresh)
+            }
+        }
+    }
+
+    // MARK: - Dismissing a source
+
+    /// Источники, которые убрали крестиком: когда и на каком треке.
+    @ObservationIgnored private var dismissed: [PlayerSource: (at: Date, track: String)] = [:]
+
+    /// Крестик на карточке: убрать источник из чёлки. Он вернётся, когда снова заиграет или
+    /// сменит трек. Если это «главный» плеер системы (например, Telegram с голосовым), ещё и
+    /// останавливаем его — тогда macOS обычно возвращает главным прежний плеер, и им снова
+    /// можно управлять из чёлки.
+    func dismiss(_ item: MediaItem) {
+        guard let candidate = candidates[item.id] else { return }
+        dismissed[item.id] = (Date(), Self.trackIdentity(candidate.track))
+        controlIssues[item.id] = nil
+        if !isDemo, case .system = item.id, candidate.isLive {
+            bridge.send("stop")
+            scheduleRefresh()
+        }
+        recompute()
+    }
+
+    private func isDismissed(_ candidate: MediaCandidate) -> Bool {
+        guard let mark = dismissed[candidate.source] else { return false }
+        // Заиграл снова или сменил трек после крестика — показываем опять.
+        let startedAgain = candidate.isPlaying && candidate.lastActivity > mark.at.addingTimeInterval(1)
+        let otherTrack = Self.trackIdentity(candidate.track) != mark.track
+        if startedAgain || otherTrack {
+            dismissed[candidate.source] = nil
+            return false
+        }
+        return true
     }
 
     /// Сразу показываем результат нажатия, не дожидаясь плеера.
     private func markLocal(_ source: PlayerSource, playing: Bool, at now: Date) {
         guard var candidate = candidates[source] else { return }
-        if candidate.isPlaying {
-            let value = candidate.elapsed + now.timeIntervalSince(candidate.elapsedTimestamp)
-            candidate.elapsed = candidate.track.duration > 0 ? min(value, candidate.track.duration) : value
-        }
+        candidate.elapsed = candidate.position(at: now)
         candidate.elapsedTimestamp = now
         candidate.isPlaying = playing
         candidate.lastActivity = now
@@ -321,8 +555,9 @@ final class NowPlayingService {
         }
         // Вкладка браузера — через JavaScript в нужной вкладке.
         if let kind = source.browserKind {
-            browser.perform(playing ? .play : .pause, in: kind, url: candidate?.tabURL) { succeeded in
-                completion?(succeeded)
+            browser.perform(playing ? .play : .pause, in: kind, url: candidate?.tabURL) { [weak self] result in
+                self?.lastBrowserFailure[source] = result == .ok ? nil : result
+                completion?(result == .ok)
             }
             return
         }
@@ -335,11 +570,88 @@ final class NowPlayingService {
             let target = item.position(at: Date()) + (forward ? 10 : -10)
             seek(item, to: max(0, item.duration > 0 ? min(item.duration, target) : target))
         } else if !isDemo {
+            beginSwitch(item.id, direction: forward ? 1 : -1)
             send(forward ? .next : .previous, to: item.id)
+            burstRefresh(item.id)
+        }
+    }
+
+    /// Переключить повтор: выкл → альбом/плейлист → один трек. Spotify по AppleScript умеет только вкл/выкл.
+    func cycleRepeat(_ item: MediaItem) {
+        guard let current = item.repeatMode else { return }
+        var mode = current.next
+        if item.id == .spotify, mode == .one { mode = .off }
+        pendingRepeat[item.id] = (mode, Date().addingTimeInterval(2.5))
+        candidates[item.id]?.repeatMode = mode
+        recompute()
+        switch item.id {
+        case .music:
+            let name = mode == .off ? "off" : mode == .one ? "one" : "all"
+            runner.run("tell application id \"com.apple.Music\" to set song repeat to \(name)")
+        case .spotify:
+            runner.run("tell application id \"com.spotify.client\" to set repeating to \(mode != .off)")
+        case .system:
+            bridge.send("repeat \(mode.rawValue)")
+        case .browser:
+            break
+        }
+        scheduleRefresh()
+    }
+
+    /// Что сообщил плеер о повторе — с учётом только что нажатого (плеер подтверждает не сразу).
+    private func reportedRepeat(_ reported: RepeatMode?, for source: PlayerSource) -> RepeatMode? {
+        if let pending = pendingRepeat[source] {
+            if pending.until > Date(), reported != pending.mode { return pending.mode }
+            pendingRepeat[source] = nil
+        }
+        return reported
+    }
+
+    /// Карточка сразу «отпускает» текущий трек; как только придёт новый (или через 1,8 с) — обычный вид.
+    private func beginSwitch(_ source: PlayerSource, direction: Int) {
+        lastSkipDirection = direction
+        switchingFrom[source] = candidates[source].map { Self.trackIdentity($0.track) } ?? ""
+        switching[source] = direction
+        switchTimeouts[source]?.cancel()
+        switchTimeouts[source] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.8))
+            guard !Task.isCancelled else { return }
+            self?.endSwitch(source)
+        }
+    }
+
+    private func endSwitch(_ source: PlayerSource) {
+        switchTimeouts[source]?.cancel()
+        switchTimeouts[source] = nil
+        switchingFrom[source] = nil
+        if switching[source] != nil { switching[source] = nil }
+    }
+
+    /// Сразу после переключения трека чаще спрашиваем плеер — только эти полторы секунды.
+    private func burstRefresh(_ source: PlayerSource) {
+        switch source {
+        case .music, .spotify:
+            for delay in [120, 300, 650] {
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    self?.refresh(source)
+                }
+            }
+        case .browser:
+            bridge.send("burst")
+            for delay in [350, 900] {
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    self?.pollBrowsers()
+                }
+            }
+        case .system:
+            bridge.send("burst")
         }
     }
 
     func seek(_ item: MediaItem, to seconds: Double) {
+        let previous = candidates[item.id].map { ($0.elapsed, $0.elapsedTimestamp) }
         if var candidate = candidates[item.id] {
             candidate.elapsed = seconds
             candidate.elapsedTimestamp = Date()
@@ -353,10 +665,33 @@ final class NowPlayingService {
             runner.run("tell application id \"\(item.id.bundleID)\" to set player position to \(value)")
             scheduleRefresh()
         case .browser(let kind):
-            browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL)
-            scheduleRefresh()
+            seekInBrowser(item, kind: kind, to: seconds, previous: previous)
         case .system:
-            if candidates[item.id]?.isLive != false { bridge.send("seek \(value)") }
+            if candidates[item.id]?.isLive != false {
+                bridge.send("seek \(value)")
+            } else if let kind = item.id.browserKind {
+                seekInBrowser(item, kind: kind, to: seconds, previous: previous)
+            } else {
+                commandFailed(item, revertTo: item.isPlaying)
+            }
+        }
+    }
+
+    private func seekInBrowser(_ item: MediaItem, kind: BrowserKind, to seconds: Double, previous: (Double, Date)?) {
+        browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL) { [weak self] result in
+            guard let self else { return }
+            self.lastBrowserFailure[item.id] = result == .ok ? nil : result
+            if result == .ok {
+                self.controlIssues[item.id] = nil
+                self.scheduleRefresh()
+            } else {
+                if let previous, var candidate = self.candidates[item.id] {
+                    candidate.elapsed = previous.0
+                    candidate.elapsedTimestamp = previous.1
+                    self.candidates[item.id] = candidate
+                }
+                self.commandFailed(item, revertTo: item.isPlaying)
+            }
         }
     }
 
@@ -368,7 +703,9 @@ final class NowPlayingService {
             browser.focusTab(in: kind, title: candidate?.tabTitle ?? item.title, url: candidate?.tabURL)
             return
         }
-        if let pid = candidate?.pid, let app = NSRunningApplication(processIdentifier: pid) {
+        // Основное приложение по bundle ID (звук мог прийти от вспомогательного процесса), затем по PID.
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: item.id.bundleID).first
+            ?? candidate?.pid.flatMap({ NSRunningApplication(processIdentifier: $0) }) {
             app.activate()
             return
         }
@@ -426,6 +763,19 @@ final class NowPlayingService {
             candidates[media.source] = candidate
         }
         recompute()
+    }
+
+    /// Выход из демо: забываем показные карточки и снова слушаем настоящие плееры.
+    func endDemo() {
+        guard isDemo else { return }
+        isDemo = false
+        candidates = [:]
+        pending = [:]
+        controlIssues = [:]
+        displayedKey = nil
+        recompute()
+        if Pref.bool(Pref.systemNowPlaying) { bridge.start() }
+        refreshAll()
     }
 
     func setDemoPlaying(_ source: PlayerSource, _ playing: Bool) {
@@ -496,7 +846,8 @@ final class NowPlayingService {
         artworkKey: String,
         tabURL: String? = nil,
         tabTitle: String? = nil,
-        pid: pid_t? = nil
+        pid: pid_t? = nil,
+        rate: Double? = nil
     ) -> Bool {
         let now = Date()
         var playing = playing
@@ -526,6 +877,8 @@ final class NowPlayingService {
         }
         candidate.track = newTrack
         candidate.lastUpdate = now
+        // Пока играет, скорость > 0; на паузе система присылает 0 — тогда оставляем прежнюю.
+        if let rate, rate > 0 { candidate.rate = rate }
         candidate.isPlaying = playing
         candidate.elapsed = position
         candidate.elapsedTimestamp = timestamp
@@ -542,6 +895,7 @@ final class NowPlayingService {
     }
 
     private func removeCandidate(_ source: PlayerSource) {
+        controlIssues[source] = nil
         guard candidates.removeValue(forKey: source) != nil else { return }
         recompute()
     }
@@ -565,18 +919,29 @@ final class NowPlayingService {
             if case .system = key { return nil }
             return key.bundleID
         })
-        let visible = candidates.values.filter { candidate in
+        var visible = candidates.values.filter { candidate in
+            if isDismissed(candidate) { return false }
             if case .system(let id) = candidate.source {
                 return candidate.isLive || !directBundles.contains(id)
             }
             return !liveSystemBundles.contains(candidate.source.bundleID)
         }
+        // Один и тот же трек из списка всех плееров и от главного плеера — одна карточка.
+        let liveTracks = Set(visible.filter { !$0.fromClients || $0.isLive }.map { Self.trackIdentity($0.track) })
+        visible.removeAll { $0.fromClients && !$0.isLive && liveTracks.contains(Self.trackIdentity($0.track)) }
         let latest: (MediaCandidate, MediaCandidate) -> Bool = { $0.lastActivity < $1.lastActivity }
         let chosen = visible.filter(\.isPlaying).max(by: latest) ?? visible.max(by: latest)
 
         let ordered = visible.sorted { lhs, rhs in
             if lhs.isPlaying != rhs.isPlaying { return lhs.isPlaying }
             return lhs.lastActivity > rhs.lastActivity
+        }
+        // Пришёл новый трек у источника, который листали, — снимаем «переключение» в том же
+        // обновлении, что и новые данные: старое название уезжает, новое въезжает одним движением.
+        for (source, from) in switchingFrom {
+            if let candidate = candidates[source], Self.trackIdentity(candidate.track) != from {
+                endSwitch(source)
+            }
         }
         let newItems = ordered.map(makeItem)
         if newItems != items { items = newItems }
@@ -596,7 +961,8 @@ final class NowPlayingService {
 
         if source != chosen.source {
             source = chosen.source
-            let info = chosen.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+            let info = NSRunningApplication.runningApplications(withBundleIdentifier: chosen.source.bundleID).first
+                ?? chosen.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
             let fallback = appInfo(for: chosen.source.bundleID)
             sourceName = info?.localizedName ?? fallback.name
             sourceIcon = info?.icon ?? fallback.icon
@@ -605,13 +971,24 @@ final class NowPlayingService {
         if track != chosen.track { track = chosen.track }
         if elapsed != chosen.elapsed { elapsed = chosen.elapsed }
         if elapsedTimestamp != chosen.elapsedTimestamp { elapsedTimestamp = chosen.elapsedTimestamp }
+        if rate != chosen.rate { rate = chosen.rate }
         if artwork !== chosen.artwork { applyArtwork(chosen.artwork) }
 
         let key = "\(chosen.source.bundleID)|\(chosen.track.title)|\(chosen.track.artist)"
         if key != displayedKey {
             let hadTrack = displayedKey != nil
             displayedKey = key
-            if chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
+            // Объявляем трек, только если у этого источника он действительно сменился.
+            // Когда macOS перекидывает «главный» плеер между уже знакомыми треками — молчим.
+            let isNew = announced[chosen.source] != key
+            announced[chosen.source] = key
+            // Плееры часто присылают новый трек в два приёма (сначала название, потом исполнитель):
+            // то же название в течение 10 секунд второй раз не объявляем.
+            let title = chosen.track.title.lowercased()
+            let repeated = title == lastAnnouncedTitle && Date().timeIntervalSince(lastAnnouncedAt) < 10
+            if isNew, !repeated, chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
+                lastAnnouncedTitle = title
+                lastAnnouncedAt = Date()
                 onTrackChange?(chosen.track)
             }
         }
@@ -635,7 +1012,8 @@ final class NowPlayingService {
     ]
 
     private func makeItem(_ candidate: MediaCandidate) -> MediaItem {
-        let running = candidate.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: candidate.source.bundleID).first
+            ?? candidate.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
         let info = appInfo(for: candidate.source.bundleID)
         let appName = running?.localizedName ?? (info.name.isEmpty ? "Плеер" : info.name)
         let icon = running?.icon ?? info.icon
@@ -653,24 +1031,12 @@ final class NowPlayingService {
             }
         }
 
-        var backdrop: NSImage?
-        var accent = NSColor.white
-        if let artwork = candidate.artwork {
-            let key = ObjectIdentifier(artwork)
-            if let cached = backdropCache[key] {
-                backdrop = cached
-            } else if let made = ArtworkProcessing.backdrop(from: artwork) {
-                backdropCache[key] = made
-                backdrop = made
-            }
-            if let cached = accentCache[key] {
-                accent = cached
-            } else {
-                accent = artwork.averageAccentColor ?? .white
-                accentCache[key] = accent
-            }
-            if backdropCache.count > 24 { backdropCache.removeAll(); accentCache.removeAll() }
-        }
+        let look = candidate.artwork.map(look(for:))
+        let backdrop = look?.backdrop
+        // Новый трек часто приходит без обложки, и она догружается чуть позже. Чтобы цвет не прыгал
+        // в белый и обратно, держим прежний цвет этого источника, пока не придёт новая обложка.
+        let accent = look?.accent ?? lastAccent[candidate.source] ?? .white
+        if let look { lastAccent[candidate.source] = look.accent }
 
         let subtitle = [candidate.track.artist, candidate.track.album].filter { !$0.isEmpty }.joined(separator: " — ")
         return MediaItem(
@@ -686,13 +1052,30 @@ final class NowPlayingService {
             accent: accent,
             sourceLabel: label,
             sourceIcon: icon,
-            isVideo: isVideo
+            isVideo: isVideo,
+            rate: candidate.rate,
+            repeatMode: isVideo ? nil : candidate.repeatMode
         )
+    }
+
+    private func look(for image: NSImage) -> ArtworkLook {
+        let key = ObjectIdentifier(image)
+        if let cached = looks[key], cached.image === image { return cached }
+        if looks.count > 24 { looks.removeAll() }
+        let look = ArtworkLook(
+            image: image,
+            accent: image.averageAccentColor ?? .white,
+            backdrop: ArtworkProcessing.backdrop(from: image)
+        )
+        looks[key] = look
+        return look
     }
 
     private func applyArtwork(_ image: NSImage?) {
         artwork = image
-        let color = image?.averageAccentColor ?? .white
+        // Без обложки (догружается) оставляем прежний цвет — эквалайзер не мигает белым.
+        guard let image else { return }
+        let color = look(for: image).accent
         if color != accentNSColor {
             accentNSColor = color
             accent = Color(nsColor: color)
@@ -783,6 +1166,14 @@ final class NowPlayingService {
             timestamp: Date(),
             artworkKey: key
         )
+        let repeatMode: RepeatMode?
+        switch snapshot.repeatMode?.lowercased() {
+        case "one"?: repeatMode = .one
+        case "all"?, "true"?: repeatMode = .all
+        case "off"?, "false"?: repeatMode = .off
+        default: repeatMode = nil
+        }
+        candidates[player]?.repeatMode = reportedRepeat(repeatMode, for: player)
         recompute()
         if needsArtwork { loadArtwork(for: player, url: snapshot.artworkURL, key: key) }
     }
@@ -822,29 +1213,114 @@ final class NowPlayingService {
                 timestamp: Date(),
                 artworkKey: key,
                 tabURL: media.url,
-                tabTitle: media.tabTitle
+                tabTitle: media.tabTitle,
+                rate: media.rate
             )
             if needsArtwork { loadArtwork(for: source, url: media.artwork.isEmpty ? nil : media.artwork, key: key) }
         }
         recompute()
     }
 
+    /// Плеер иногда присылает новое название вместе со старой картинкой (музыку сменило видео,
+    /// а обложка ещё от трека). Если картинка байт в байт как у прошлого трека, а альбом другой —
+    /// это устаревшая обложка: показываем заглушку, пока не придёт настоящая. Треки одного альбома
+    /// с общей обложкой это не задевает.
+    private func freshArtwork(_ data: Data, for source: PlayerSource, album: String, trackKey: String) -> NSImage? {
+        let hash = data.hashValue
+        if let previous = artworkFingerprints[source], previous.hash == hash,
+           previous.track != trackKey, previous.album != album {
+            return nil
+        }
+        // Та же картинка уже принадлежит треку другого плеера (видео получило обложку музыки).
+        let borrowed = artworkFingerprints.contains { other, fingerprint in
+            other != source && fingerprint.hash == hash && fingerprint.album != album
+        }
+        if borrowed { return nil }
+        artworkFingerprints[source] = (hash, trackKey, album)
+        return NSImage(data: data)
+    }
+
+    /// Все плееры, которые сообщают о воспроизведении, — не только выбранный системой.
+    /// Так видно, например, Яндекс Музыку, даже когда «главным» macOS считает браузер.
+    private func applyClients(_ clients: [BridgeClientInfo]) {
+        var seen = Set<PlayerSource>()
+        var changed = false
+        for client in clients {
+            // Тот же способ, что и для главного плеера: вспомогательный процесс → основное приложение.
+            // Иначе одно приложение могло прийти под двумя идентификаторами и стать двумя карточками.
+            var bundleID = (client.pid > 0 ? Self.appIdentity(pid: client.pid)?.bundleID : nil) ?? client.bundleID
+            if bundleID.hasPrefix("com.apple.WebKit") { bundleID = BrowserKind.safari.bundleID }
+            guard bundleID != Bundle.main.bundleIdentifier else { continue }
+            let source = PlayerSource.system(bundleID)
+            seen.insert(source)
+            // Выбранный системой плеер приходит отдельным, более точным сообщением.
+            if candidates[source]?.isLive == true { continue }
+            let key = "client|\(client.title)|\(client.artist)|\(client.album)"
+            let isNew = candidates[source] == nil
+            let artworkChanged = upsert(
+                source,
+                track: NowPlayingTrack(title: client.title, artist: client.artist, album: client.album, duration: client.duration),
+                playing: client.rate > 0,
+                elapsed: client.elapsed,
+                timestamp: client.timestamp > 0 ? Date(timeIntervalSince1970: client.timestamp) : Date(),
+                artworkKey: key,
+                pid: client.pid > 0 ? client.pid : nil,
+                rate: client.rate
+            )
+            if isNew { candidates[source]?.isLive = false }
+            candidates[source]?.fromClients = true
+            candidates[source]?.repeatMode = reportedRepeat(client.repeatMode.flatMap(RepeatMode.init(rawValue:)), for: source)
+            if let data = client.artwork {
+                candidates[source]?.artwork = freshArtwork(data, for: source, album: client.album, trackKey: key)
+            } else if !client.hasArtwork {
+                candidates[source]?.artwork = nil
+            } else if artworkChanged {
+                candidates[source]?.artwork = nil
+            }
+            changed = true
+        }
+        // Клиент пропал из списка (плеер закрыли или он перестал сообщать о треке) — убираем.
+        let gone = candidates.values.filter { $0.fromClients && !$0.isLive && !seen.contains($0.source) }.map(\.source)
+        for source in gone {
+            candidates.removeValue(forKey: source)
+            controlIssues[source] = nil
+            changed = true
+        }
+        let names = clients.map { client in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: client.bundleID)
+                .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+                ?? client.bundleID
+        }
+        otherPlayersStatus = names.isEmpty ? "никого" : names.joined(separator: ", ")
+        if changed { recompute() }
+    }
+
     private func applyBridge(_ event: BridgeEvent) {
         guard !isDemo else { return }
         let systemSources = candidates.keys.filter { if case .system = $0 { return true } else { return false } }
         switch event {
+        case .clients(let clients):
+            applyClients(clients)
         case .ready:
-            break
+            systemStatus = "Помощник запущен, ждём трек…"
         case .stopped:
+            let reason = bridge.lastError.map { ": \($0)" } ?? ""
+            systemStatus = "Помощник остановлен (перезапусков: \(bridge.restarts))\(reason)"
             systemSources.forEach(removeCandidate)
         case .info(let info):
+            if info.isEmpty {
+                systemStatus = "macOS сообщает: сейчас ничего не играет"
+            } else {
+                let identity = Self.appIdentity(pid: info.pid)
+                let who = identity.map { "\($0.name) (\($0.bundleID))" } ?? "PID \(info.pid)"
+                systemStatus = "\(who): \(info.title)\(info.isPlaying ? "" : " — пауза")"
+            }
             guard !info.isEmpty else {
                 // Источник закрылся (вкладка, плеер) — убираем только живой, запомненные оставляем.
                 systemSources.filter { candidates[$0]?.isLive != false }.forEach(removeCandidate)
                 return
             }
-            let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid) : nil
-            var bundleID = app?.bundleIdentifier ?? ""
+            var bundleID = Self.appIdentity(pid: info.pid)?.bundleID ?? ""
             // Звук из Safari иногда приходит от процесса WebKit — это всё равно Safari.
             if bundleID.hasPrefix("com.apple.WebKit") { bundleID = BrowserKind.safari.bundleID }
             let source = PlayerSource.system(bundleID)
@@ -860,6 +1336,7 @@ final class NowPlayingService {
                 switched = true
             }
             candidates[source]?.isLive = true
+            controlIssues[source] = nil
             if switched { scheduleSettle() }
 
             let key = "system|\(info.title)|\(info.artist)|\(info.album)"
@@ -870,15 +1347,19 @@ final class NowPlayingService {
                 elapsed: info.elapsed,
                 timestamp: info.timestamp > 0 ? Date(timeIntervalSince1970: info.timestamp) : Date(),
                 artworkKey: key,
-                pid: info.pid > 0 ? info.pid : nil
+                pid: info.pid > 0 ? info.pid : nil,
+                rate: info.rate
             )
+            // Браузерные вкладки повтор не поддерживают — кнопку для них не показываем.
+            let reported = source.browserKind == nil ? info.repeatMode.flatMap(RepeatMode.init(rawValue:)) : nil
+            candidates[source]?.repeatMode = reportedRepeat(reported, for: source)
             // Подтягиваем вкладку браузера, если её уже знаем из опроса.
             if let kind = source.browserKind, let tab = candidates[.browser(kind)], tab.track.title == info.title {
                 candidates[source]?.tabURL = tab.tabURL
                 candidates[source]?.tabTitle = tab.tabTitle
             }
             if let data = info.artwork {
-                candidates[source]?.artwork = NSImage(data: data)
+                candidates[source]?.artwork = freshArtwork(data, for: source, album: info.album, trackKey: key)
             } else if !info.hasArtwork {
                 candidates[source]?.artwork = nil
             } else if artworkChanged {
@@ -888,10 +1369,43 @@ final class NowPlayingService {
         }
     }
 
+    private static func trackIdentity(_ track: NowPlayingTrack) -> String {
+        "\(track.title.lowercased())|\(track.artist.lowercased())"
+    }
+
+    /// Приложение, которому принадлежит процесс. Звук часто идёт от вспомогательного процесса
+    /// (у Electron-приложений вроде Яндекс Музыки — «… Helper.app» внутри основного), поэтому
+    /// поднимаемся до самого внешнего .app — это и есть плеер, который нужно показать и открыть.
+    static func appIdentity(pid: Int32) -> (bundleID: String, name: String)? {
+        guard pid > 0 else { return nil }
+        var path = NSRunningApplication(processIdentifier: pid)?.bundleURL?.path
+        if path == nil {
+            var buffer = [CChar](repeating: 0, count: 4096)
+            if proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 {
+                path = String(cString: buffer)
+            }
+        }
+        guard let path else { return nil }
+        let outer: String
+        if let range = path.range(of: ".app/") {
+            outer = String(path[..<range.lowerBound]) + ".app"
+        } else if path.hasSuffix(".app") {
+            outer = path
+        } else {
+            let app = NSRunningApplication(processIdentifier: pid)
+            guard let bundleID = app?.bundleIdentifier else { return nil }
+            return (bundleID, app?.localizedName ?? bundleID)
+        }
+        let url = URL(fileURLWithPath: outer)
+        guard let bundleID = Bundle(url: url)?.bundleIdentifier else { return nil }
+        let name = FileManager.default.displayName(atPath: outer).replacingOccurrences(of: ".app", with: "")
+        return (bundleID, name)
+    }
+
     private func scheduleSettle() {
         settleTask?.cancel()
         settleTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3.5))
+            try? await Task.sleep(for: .seconds(12.5))
             guard !Task.isCancelled else { return }
             self?.settleRemembered()
         }
@@ -902,10 +1416,9 @@ final class NowPlayingService {
         let now = Date()
         var changed = false
         for (source, candidate) in candidates where !candidate.isLive && candidate.isPlaying {
-            guard now.timeIntervalSince(candidate.lastUpdate) > 3 else { continue }
+            guard now.timeIntervalSince(candidate.lastUpdate) > 12 else { continue }
             var paused = candidate
-            let value = paused.elapsed + now.timeIntervalSince(paused.elapsedTimestamp)
-            paused.elapsed = paused.track.duration > 0 ? min(value, paused.track.duration) : value
+            paused.elapsed = paused.position(at: now)
             paused.elapsedTimestamp = now
             paused.isPlaying = false
             candidates[source] = paused
@@ -995,7 +1508,7 @@ final class NowPlayingService {
             tell application id "com.apple.Music"
                 if player state is stopped then return {"stopped"}
                 set t to current track
-                return {(player state as string), (name of t), (artist of t), (album of t), (duration of t), (player position)}
+                return {(player state as string), (name of t), (artist of t), (album of t), (duration of t), (player position), "", (song repeat as string)}
             end tell
             """
         case .spotify:
@@ -1003,7 +1516,7 @@ final class NowPlayingService {
             tell application id "com.spotify.client"
                 if player state is stopped then return {"stopped"}
                 set t to current track
-                return {(player state as string), (name of t), (artist of t), (album of t), ((duration of t) / 1000), (player position), (artwork url of t)}
+                return {(player state as string), (name of t), (artist of t), (album of t), ((duration of t) / 1000), (player position), (artwork url of t), (repeating as string)}
             end tell
             """
         case .browser, .system:

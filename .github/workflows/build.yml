@@ -14,16 +14,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Иконку в формате macOS 26 (Icon Composer) умеет собрать только Xcode 26 на macOS 26.
+  # Само приложение собирается как раньше; если этот шаг не получится, останется классическая иконка.
+  icon:
+    runs-on: macos-26
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile icon
+        run: ./scripts/build-icon.sh "$RUNNER_TEMP/icon"
+      - name: Upload icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-icon
+          path: ${{ runner.temp }}/icon/Assets.car
+          if-no-files-found: error
+
   build:
+    needs: icon
+    if: ${{ !cancelled() }}
     runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
+      - name: Icon for macOS 26
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: app-icon
+          path: ${{ runner.temp }}/icon
+
       - name: Toolchain
         run: |
           xcodebuild -version
           swift --version
+          ls -d /Applications/Xcode*.app || true
+          # Окно установщика с фоном и стрелкой.
+          brew install create-dmg || echo "create-dmg не поставился — будет простой DMG"
 
       # Необязательно: постоянный сертификат подписи (секреты MACOS_CERT_P12 в base64 и MACOS_CERT_PASSWORD).
       # С ним macOS не сбрасывает разрешения (Универсальный доступ, Полный доступ к диску) после обновления.
@@ -55,14 +84,15 @@ jobs:
         env:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.3.{0}', github.run_number) }}
           BUILD_NUMBER: ${{ github.run_number }}
+          PREBUILT_ICON_CAR: ${{ runner.temp }}/icon/Assets.car
         run: |
           VERSION="${VERSION#v}" ./scripts/build-app.sh
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: CoolNotch-dmg
-          path: .build/app/CoolNotch.dmg
+          name: Halo-dmg
+          path: .build/app/Halo.dmg
           if-no-files-found: error
 
       # Каждая сборка main становится релизом — кнопка «Обновить» в приложении берёт его отсюда.
@@ -72,12 +102,12 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }})
+          name: Halo 0.3.${{ github.run_number }} (build ${{ github.run_number }})
           make_latest: "true"
           generate_release_notes: true
           files: |
-            .build/app/CoolNotch.dmg
-            .build/app/CoolNotch.zip
+            .build/app/Halo.dmg
+            .build/app/Halo.zip
 
       # Сборки из веток разработки — «тестовые» (предварительные) релизы. Их видит кнопка
       # «Обновить», если в настройках включены «Тестовые сборки».
@@ -87,21 +117,21 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }}, тестовая)
+          name: Halo 0.3.${{ github.run_number }} (build ${{ github.run_number }}, тестовая)
           prerelease: true
           make_latest: "false"
           body: Тестовая сборка из ветки ${{ github.ref_name }} (${{ github.sha }}).
           files: |
-            .build/app/CoolNotch.dmg
-            .build/app/CoolNotch.zip
+            .build/app/Halo.dmg
+            .build/app/Halo.zip
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: Cool Notch ${{ github.ref_name }} (build ${{ github.run_number }})
+          name: Halo ${{ github.ref_name }} (build ${{ github.run_number }})
           make_latest: "true"
           files: |
-            .build/app/CoolNotch.dmg
-            .build/app/CoolNotch.zip
+            .build/app/Halo.dmg
+            .build/app/Halo.zip
           generate_release_notes: true
