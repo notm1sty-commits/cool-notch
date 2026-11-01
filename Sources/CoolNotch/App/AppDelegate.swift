@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private var demoDirector: DemoDirector?
     private var onboardingWindow: NSWindow?
+    /// Приложение, в котором был пользователь до открытия наших окон: вернём ему фокус.
+    private var appBeforeWindows: NSRunningApplication?
+    private var windowObservers: [NSObjectProtocol] = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Pref.registerDefaults()
@@ -87,16 +90,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showSettings() {
         viewModel?.close()
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsView(notifications: viewModel?.notifications, updates: viewModel?.updates, nowPlaying: viewModel?.nowPlaying))
+            let hosting = NSHostingController(rootView: SettingsView(
+                notifications: viewModel?.notifications,
+                updates: viewModel?.updates,
+                nowPlaying: viewModel?.nowPlaying,
+                clipboard: viewModel?.clipboard
+            ))
             let window = NSWindow(contentViewController: hosting)
             window.title = "Cool Notch — настройки"
             window.styleMask = [.titled, .closable, .miniaturizable]
             window.isReleasedWhenClosed = false
             window.center()
+            watchClose(of: window)
             settingsWindow = window
         }
+        rememberFrontApp()
         NSApp.activate()
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private func rememberFrontApp() {
+        guard !NSApp.isActive, let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        appBeforeWindows = front
+    }
+
+    private func watchClose(of window: NSWindow) {
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self, weak window] _ in
+            Task { @MainActor in self?.windowClosed(window) }
+        })
+    }
+
+    /// Закрыли настройки или окно разрешений. Если других наших окон нет, отдаём фокус обратно:
+    /// иначе Cool Notch остаётся активным без окон, и macOS перестаёт сообщать о движении мыши.
+    private func windowClosed(_ closing: NSWindow?) {
+        let stillOpen = [settingsWindow, onboardingWindow].compactMap { $0 }.filter { $0 !== closing && $0.isVisible }
+        guard stillOpen.isEmpty else { return }
+        if let app = appBeforeWindows, !app.isTerminated {
+            app.activate()
+        } else {
+            NSApp.deactivate()
+        }
+        appBeforeWindows = nil
     }
 
     // MARK: - Onboarding
@@ -125,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
             window.center()
+            watchClose(of: window)
             onboardingWindow = window
         }
         guard let window = onboardingWindow else { return }
@@ -132,6 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // оказывалось под другими. Поэтому поднимаем его над всеми, а через пару секунд
         // возвращаем обычный уровень, чтобы не закрывать Системные настройки.
         window.level = .floating
+        rememberFrontApp()
         NSApp.activate()
         window.orderFrontRegardless()
         window.makeKey()

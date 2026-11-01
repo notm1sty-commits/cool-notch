@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Быстрые заметки: пишешь внизу, отправляешь — появляется в списке.
 /// «Изменить» включает перетаскивание и удаление.
@@ -7,6 +8,7 @@ struct NotesView: View {
     @State var draft = ""
     @State var editing = false
     @State var copiedID: UUID?
+    @State var dragging: NotesStore.Note?
     @FocusState var composerFocused: Bool
 
     var body: some View {
@@ -31,8 +33,10 @@ struct NotesView: View {
                     .padding(.horizontal, 10)
                     .frame(height: 22)
                     .glass(11)
+                    .transition(.opacity)
                 }
             }
+            .frame(height: 24)
 
             ZStack {
                 if store.notes.isEmpty {
@@ -51,34 +55,37 @@ struct NotesView: View {
             composer(store: store)
         }
         .animation(Theme.content, value: store.notes)
+        .onChange(of: editing) { _, _ in dragging = nil }
     }
 
+    /// Свой список вместо системного: тот добавлял поля слева и справа, и карточки
+    /// были уже остальных элементов. Порядок меняется перетаскиванием в режиме «Изменить».
     private func list(store: NotesStore) -> some View {
-        List {
-            ForEach(store.notes) { note in
-                NoteRow(note: note, editing: editing, copied: copiedID == note.id) {
-                    store.copy(note)
-                    withAnimation(Theme.micro) { copiedID = note.id }
-                    Task { @MainActor in
-                        try? await Task.sleep(for: .seconds(1.4))
-                        if copiedID == note.id { withAnimation(Theme.micro) { copiedID = nil } }
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 6) {
+                ForEach(store.notes) { note in
+                    NoteRow(note: note, editing: editing, copied: copiedID == note.id) {
+                        store.copy(note)
+                        withAnimation(Theme.micro) { copiedID = note.id }
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(1.4))
+                            if copiedID == note.id { withAnimation(Theme.micro) { copiedID = nil } }
+                        }
+                    } onDelete: {
+                        withAnimation(Theme.content) { store.remove(note) }
                     }
-                } onDelete: {
-                    withAnimation(Theme.content) { store.remove(note) }
+                    .opacity(editing && dragging?.id == note.id ? 0.4 : 1)
+                    .onDrag {
+                        // В режиме «Изменить» тянем, чтобы поменять порядок, иначе — сам текст заметки
+                        // можно перетащить в любое приложение.
+                        if editing { dragging = note }
+                        return NSItemProvider(object: note.text as NSString)
+                    }
+                    .onDrop(of: [UTType.text], delegate: NoteDropDelegate(target: note, store: store, dragging: $dragging))
                 }
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
-                .moveDisabled(!editing)
             }
-            .onMove { source, destination in
-                store.move(from: source, to: destination)
-            }
+            .frame(maxWidth: .infinity)
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .scrollIndicators(.never)
-        .environment(\.defaultMinListRowHeight, 10)
     }
 
     private func composer(store: NotesStore) -> some View {
@@ -179,5 +186,32 @@ private struct NoteRow: View {
             Button("Скопировать", action: onCopy)
             Button("Удалить", role: .destructive, action: onDelete)
         }
+    }
+}
+
+/// Перестановка заметок перетаскиванием: карточка «раздвигает» соседей прямо во время движения.
+private struct NoteDropDelegate: DropDelegate {
+    let target: NotesStore.Note
+    let store: NotesStore
+    @Binding var dragging: NotesStore.Note?
+
+    func validateDrop(info: DropInfo) -> Bool { dragging != nil }
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging.id != target.id,
+              let from = store.notes.firstIndex(where: { $0.id == dragging.id }),
+              let to = store.notes.firstIndex(where: { $0.id == target.id }) else { return }
+        withAnimation(Theme.content) {
+            store.move(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }

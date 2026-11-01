@@ -72,6 +72,13 @@ final class NotchWindowController {
         ) { [weak self] _ in
             Task { @MainActor in self?.reposition() }
         })
+        // Пока активен сам Cool Notch (например, только что закрыли настройки), глобальный
+        // монитор мыши молчит — тогда следим за курсором опросом.
+        for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.updatePolling() }
+            })
+        }
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
@@ -172,7 +179,7 @@ final class NotchWindowController {
 
     /// Пока чёлка открыта, дополнительно опрашиваем мышь — надёжно ловим уход курсора.
     private func updatePolling() {
-        if viewModel.isOpen || viewModel.isHovering {
+        if viewModel.isOpen || viewModel.isHovering || NSApp.isActive {
             guard pollTimer == nil else { return }
             pollTimer = Timer.coalesced(interval: 1.0 / 12.0, tolerance: 0.2) { [weak self] in
                 self?.updateHover()

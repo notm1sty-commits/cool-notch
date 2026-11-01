@@ -8,6 +8,18 @@ struct ClipboardView: View {
 
     var body: some View {
         let clipboard = vm.clipboard
+        VStack(spacing: 6) {
+            if clipboard.isEnabled, clipboard.screenshotAccess == false, Pref.bool(Pref.screenshotsInHistory) {
+                ScreenshotAccessRow { clipboard.fixScreenshotAccess() }
+                    .transition(.opacity)
+            }
+            list(clipboard)
+        }
+        .animation(Theme.content, value: clipboard.screenshotAccess)
+    }
+
+    @ViewBuilder
+    private func list(_ clipboard: ClipboardService) -> some View {
         ZStack {
             if !clipboard.isEnabled {
                 PlaceholderView(
@@ -40,6 +52,37 @@ struct ClipboardView: View {
             }
         }
         .animation(Theme.content, value: clipboard.entries.map(\.id))
+    }
+}
+
+/// macOS не пускает в папку со скриншотами — объясняем и даём починить в один клик.
+private struct ScreenshotAccessRow: View {
+    var action: () -> Void
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Скриншоты не видны: нет доступа к папке")
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text("После обновления macOS иногда забывает разрешение")
+                    .font(.system(size: 9.5))
+                    .foregroundStyle(Theme.tertiaryText)
+            }
+            Spacer(minLength: 6)
+            Button("Разрешить", action: action)
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                .background(Capsule().fill(Color.white))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .glass(12)
     }
 }
 

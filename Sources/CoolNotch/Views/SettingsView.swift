@@ -6,6 +6,7 @@ struct SettingsView: View {
     var notifications: NotificationMirror?
     var updates: UpdateService?
     var nowPlaying: NowPlayingService?
+    var clipboard: ClipboardService?
 
     @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
@@ -136,6 +137,9 @@ struct SettingsView: View {
                 Toggle("Сохранять историю копирования", isOn: $clipboardHistory)
                 Toggle("Добавлять новые скриншоты", isOn: $screenshotsInHistory)
                     .disabled(!clipboardHistory)
+                if clipboardHistory, screenshotsInHistory, let clipboard {
+                    ScreenshotStatusRow(clipboard: clipboard)
+                }
                 Text("История хранится только в памяти и стирается при выходе. Пароли из менеджеров паролей пропускаются. Скриншоты берутся из папки, куда их сохраняет macOS (обычно рабочий стол).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -304,5 +308,29 @@ private struct UpdatesSection: View {
             }
             return "Установлена \(updates.currentVersion) (сборка \(updates.currentBuild))"
         }
+    }
+}
+
+/// Видно ли папку со скриншотами и кнопка «починить».
+private struct ScreenshotStatusRow: View {
+    let clipboard: ClipboardService
+
+    var body: some View {
+        HStack {
+            switch clipboard.screenshotAccess {
+            case true?:
+                Label("Папка со скриншотами доступна", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case false?:
+                Label("Нет доступа к папке со скриншотами", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Spacer()
+                Button("Разрешить") { clipboard.fixScreenshotAccess() }
+            case nil:
+                Label("Ждём первый скриншот", systemImage: "camera.viewfinder")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
     }
 }
