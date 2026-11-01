@@ -218,6 +218,8 @@ final class NowPlayingService {
     /// Какой трек мы уже объявляли для каждого источника: баннер только при настоящей смене
     /// трека, а не когда macOS переключает «главный» плеер туда-сюда.
     @ObservationIgnored private var announced: [PlayerSource: String] = [:]
+    /// Какая картинка пришла с каким треком — чтобы распознать «залипшую» обложку.
+    @ObservationIgnored private var artworkFingerprints: [PlayerSource: (hash: Int, track: String, album: String)] = [:]
     @ObservationIgnored private var pending: [PlayerSource: PendingPlayback] = [:]
     @ObservationIgnored private var settleTask: Task<Void, Never>?
 
@@ -1037,6 +1039,25 @@ final class NowPlayingService {
         recompute()
     }
 
+    /// Плеер иногда присылает новое название вместе со старой картинкой (музыку сменило видео,
+    /// а обложка ещё от трека). Если картинка байт в байт как у прошлого трека, а альбом другой —
+    /// это устаревшая обложка: показываем заглушку, пока не придёт настоящая. Треки одного альбома
+    /// с общей обложкой это не задевает.
+    private func freshArtwork(_ data: Data, for source: PlayerSource, album: String, trackKey: String) -> NSImage? {
+        let hash = data.hashValue
+        if let previous = artworkFingerprints[source], previous.hash == hash,
+           previous.track != trackKey, previous.album != album {
+            return nil
+        }
+        // Та же картинка уже принадлежит треку другого плеера (видео получило обложку музыки).
+        let borrowed = artworkFingerprints.contains { other, fingerprint in
+            other != source && fingerprint.hash == hash && fingerprint.album != album
+        }
+        if borrowed { return nil }
+        artworkFingerprints[source] = (hash, trackKey, album)
+        return NSImage(data: data)
+    }
+
     /// Все плееры, которые сообщают о воспроизведении, — не только выбранный системой.
     /// Так видно, например, Яндекс Музыку, даже когда «главным» macOS считает браузер.
     private func applyClients(_ clients: [BridgeClientInfo]) {
@@ -1065,7 +1086,7 @@ final class NowPlayingService {
             if isNew { candidates[source]?.isLive = false }
             candidates[source]?.fromClients = true
             if let data = client.artwork {
-                candidates[source]?.artwork = NSImage(data: data)
+                candidates[source]?.artwork = freshArtwork(data, for: source, album: client.album, trackKey: key)
             } else if !client.hasArtwork {
                 candidates[source]?.artwork = nil
             } else if artworkChanged {
@@ -1150,7 +1171,7 @@ final class NowPlayingService {
                 candidates[source]?.tabTitle = tab.tabTitle
             }
             if let data = info.artwork {
-                candidates[source]?.artwork = NSImage(data: data)
+                candidates[source]?.artwork = freshArtwork(data, for: source, album: info.album, trackKey: key)
             } else if !info.hasArtwork {
                 candidates[source]?.artwork = nil
             } else if artworkChanged {
