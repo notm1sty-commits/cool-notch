@@ -256,6 +256,10 @@ struct BannerView: View {
                     .frame(width: 42, height: 42)
                     .glass(11)
             }
+        case .battery(let fraction):
+            BatteryLevelGlyph(fraction: fraction, color: banner.tint)
+                .frame(width: 42, height: 42)
+                .glass(21, tint: banner.tint)
         case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 17, weight: .semibold))
@@ -455,3 +459,33 @@ private struct BannerHeightKey: PreferenceKey {
     }
 }
 
+
+/// Батарейка для уведомлений о заряде: одна форма, отличается только заполнением и цветом
+/// (20 % — четверть, 10 % — тонкая полоска, 5 % — пусто).
+struct BatteryLevelGlyph: View {
+    var fraction: Double
+    var color: Color
+
+    private let bodyWidth: CGFloat = 24
+    private let bodyHeight: CGFloat = 12.5
+    private let inset: CGFloat = 2.8
+
+    var body: some View {
+        HStack(spacing: 1.2) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 4.2, style: .continuous)
+                    .strokeBorder(color.opacity(0.95), lineWidth: 1.6)
+                if fraction > 0 {
+                    RoundedRectangle(cornerRadius: 1.8, style: .continuous)
+                        .fill(color)
+                        .frame(width: max(2.5, (bodyWidth - inset * 2) * CGFloat(min(fraction, 1))), height: bodyHeight - inset * 2)
+                        .padding(.leading, inset)
+                }
+            }
+            .frame(width: bodyWidth, height: bodyHeight)
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(color.opacity(0.95))
+                .frame(width: 2, height: 4.5)
+        }
+    }
+}

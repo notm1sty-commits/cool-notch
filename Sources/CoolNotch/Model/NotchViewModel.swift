@@ -17,6 +17,8 @@ struct NotchBanner: Identifiable, Equatable {
         case artwork
         /// Иконка приложения по bundle id.
         case app(String)
+        /// Батарейка с заданной заполненностью (0…1) — для уведомлений о низком заряде.
+        case battery(Double)
     }
 
     enum Action: Equatable {
@@ -278,7 +280,7 @@ final class NotchViewModel {
         let red = Color(red: 1, green: 0.27, blue: 0.23)
         if level <= 5 {
             post(NotchBanner(
-                icon: .symbol("battery.0percent"),
+                icon: .battery(0),
                 tint: red,
                 title: "Критический заряд · \(level)%",
                 subtitle: "Mac скоро выключится — подключи зарядку",
@@ -286,7 +288,7 @@ final class NotchViewModel {
             ))
         } else if level <= 10 {
             post(NotchBanner(
-                icon: .symbol("battery.0percent"),
+                icon: .battery(0.12),
                 tint: red,
                 title: "Очень низкий заряд · \(level)%",
                 subtitle: "Подключи зарядку",
@@ -294,7 +296,7 @@ final class NotchViewModel {
             ))
         } else {
             post(NotchBanner(
-                icon: .symbol("battery.25percent"),
+                icon: .battery(0.25),
                 tint: Color(red: 1, green: 0.62, blue: 0.04),
                 title: "Низкий заряд · \(level)%",
                 subtitle: "Самое время подключить зарядку",
