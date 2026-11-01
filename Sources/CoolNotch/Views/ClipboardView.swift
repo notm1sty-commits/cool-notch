@@ -211,6 +211,8 @@ private struct ClipRow: View {
         }
         .help(entry.isImage ? "Нажми, чтобы скопировать картинку, или перетащи её" : String(entry.text.prefix(500)))
         .onDrag {
+            // Во время перетаскивания наведение не сообщается — снимаем подсветку сразу.
+            hovering = false
             if let url = entry.fileURL { return NSItemProvider(contentsOf: url) ?? NSItemProvider() }
             if let image = entry.image { return NSItemProvider(object: image) }
             return NSItemProvider(object: entry.text as NSString)

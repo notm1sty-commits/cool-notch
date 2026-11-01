@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// Быстрые заметки: пишешь внизу, отправляешь — появляется в списке.
 /// «Изменить» включает перетаскивание и удаление.
@@ -8,8 +7,21 @@ struct NotesView: View {
     @State var draft = ""
     @State var editing = false
     @State var copiedID: UUID?
-    @State var dragging: NotesStore.Note?
+    /// Перестановка в режиме «Изменить»: заметка едет за курсором, соседи раздвигаются,
+    /// а порядок записывается, когда отпускаешь, — где бы ни отпустил.
+    @State var drag: NoteDrag?
+    /// Где стоит каждая карточка (в координатах списка) — чтобы понять, куда её тянут.
+    @State var rowFrames: [UUID: CGRect] = [:]
     @FocusState var composerFocused: Bool
+
+    struct NoteDrag: Equatable {
+        let id: UUID
+        let startIndex: Int
+        var translation: CGFloat
+        var targetIndex: Int
+    }
+
+    private static let rowSpacing: CGFloat = 6
 
     var body: some View {
         let store = vm.notes
@@ -23,6 +35,22 @@ struct NotesView: View {
                         .contentTransition(.numericText())
                 }
                 Spacer()
+                // Как в «Копиях»: в режиме «Изменить» — «Очистить всё».
+                if editing, !store.notes.isEmpty {
+                    Button("Очистить всё") {
+                        withAnimation(Theme.content) {
+                            store.removeAll()
+                            editing = false
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .padding(.horizontal, 10)
+                    .frame(height: 22)
+                    .glass(11)
+                    .transition(.opacity)
+                }
                 if !store.notes.isEmpty {
                     Button(editing ? "Готово" : "Изменить") {
                         withAnimation(Theme.content) { editing.toggle() }
@@ -62,16 +90,17 @@ struct NotesView: View {
             }
         }
         .animation(Theme.content, value: store.notes)
-        .onChange(of: editing) { _, _ in dragging = nil }
+        .onChange(of: editing) { _, _ in drag = nil }
     }
 
     /// Свой список вместо системного: тот добавлял поля слева и справа, и карточки
     /// были уже остальных элементов. Порядок меняется перетаскиванием в режиме «Изменить».
     private func list(store: NotesStore) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 6) {
-                ForEach(store.notes) { note in
-                    NoteRow(note: note, editing: editing, copied: copiedID == note.id) {
+            VStack(spacing: Self.rowSpacing) {
+                ForEach(Array(store.notes.enumerated()), id: \.element.id) { index, note in
+                    let isDragged = drag?.id == note.id
+                    NoteRow(note: note, editing: editing, copied: copiedID == note.id, lifted: isDragged) {
                         store.copy(note)
                         withAnimation(Theme.micro) { copiedID = note.id }
                         Task { @MainActor in
@@ -81,17 +110,65 @@ struct NotesView: View {
                     } onDelete: {
                         withAnimation(Theme.content) { store.remove(note) }
                     }
-                    .opacity(editing && dragging?.id == note.id ? 0.4 : 1)
-                    .onDrag {
-                        // В режиме «Изменить» тянем, чтобы поменять порядок, иначе — сам текст заметки
-                        // можно перетащить в любое приложение.
-                        if editing { dragging = note }
-                        return NSItemProvider(object: note.text as NSString)
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(key: NoteFramesKey.self, value: [note.id: geo.frame(in: .named("notes"))])
+                        }
                     }
-                    .onDrop(of: [UTType.text], delegate: NoteDropDelegate(target: note, store: store, dragging: $dragging))
+                    .offset(y: isDragged ? (drag?.translation ?? 0) : shift(for: index, note: note))
+                    .zIndex(isDragged ? 1 : 0)
+                    // Сдвиг соседей — пружиной, сама карточка идёт за курсором без задержки.
+                    .animation(isDragged ? nil : Theme.content, value: drag?.targetIndex)
+                    .modifier(NoteDragModifier(
+                        editing: editing,
+                        text: note.text,
+                        onChanged: { translation in dragChanged(note: note, index: index, translation: translation, store: store) },
+                        onEnded: { dragEnded(store: store) }
+                    ))
                 }
             }
+            .coordinateSpace(name: "notes")
+            .onPreferenceChange(NoteFramesKey.self) { rowFrames = $0 }
             .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Насколько сдвинуть соседа, чтобы освободить место перетаскиваемой карточке.
+    private func shift(for index: Int, note: NotesStore.Note) -> CGFloat {
+        guard let drag, let height = rowFrames[drag.id]?.height else { return 0 }
+        let gap = height + Self.rowSpacing
+        if drag.startIndex < drag.targetIndex, index > drag.startIndex, index <= drag.targetIndex { return -gap }
+        if drag.targetIndex < drag.startIndex, index >= drag.targetIndex, index < drag.startIndex { return gap }
+        return 0
+    }
+
+    private func dragChanged(note: NotesStore.Note, index: Int, translation: CGFloat, store: NotesStore) {
+        var current = drag ?? NoteDrag(id: note.id, startIndex: index, translation: 0, targetIndex: index)
+        guard current.id == note.id else { return }
+        current.translation = translation
+        // Куда попадает середина карточки — столько соседей она уже «обогнала».
+        if let frame = rowFrames[note.id] {
+            let center = frame.midY + translation
+            var target = 0
+            for otherNote in store.notes where otherNote.id != note.id {
+                guard let otherFrame = rowFrames[otherNote.id] else { continue }
+                if otherFrame.midY < center { target += 1 }
+            }
+            current.targetIndex = min(max(target, 0), store.notes.count - 1)
+        }
+        if drag != current { drag = current }
+    }
+
+    /// Отпустили — записываем новый порядок. Соседи уже стоят на своих местах, а сама карточка
+    /// мягко «садится» в своё место. Отпустить можно где угодно: состояние всегда сбрасывается.
+    private func dragEnded(store: NotesStore) {
+        guard let finished = drag else { return }
+        withAnimation(Theme.content) {
+            if finished.targetIndex != finished.startIndex {
+                let destination = finished.targetIndex > finished.startIndex ? finished.targetIndex + 1 : finished.targetIndex
+                store.move(from: IndexSet(integer: finished.startIndex), to: destination)
+            }
+            drag = nil
         }
     }
 
@@ -143,6 +220,8 @@ private struct NoteRow: View {
     let note: NotesStore.Note
     let editing: Bool
     let copied: Bool
+    /// Карточку сейчас тянут — она чуть приподнята и с тенью.
+    var lifted = false
     var onCopy: () -> Void
     var onDelete: () -> Void
 
@@ -185,7 +264,10 @@ private struct NoteRow: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .glass(14, highlighted: hovering && !editing)
+        .glass(14, highlighted: (hovering && !editing) || lifted)
+        .scaleEffect(lifted ? 1.02 : 1)
+        .shadow(color: .black.opacity(lifted ? 0.45 : 0), radius: lifted ? 12 : 0, y: lifted ? 6 : 0)
+        .animation(Theme.micro, value: lifted)
         .contentShape(Rectangle())
         .onTapGesture { if !editing { onCopy() } }
         .onHover { inside in withAnimation(Theme.micro) { hovering = inside } }
@@ -196,29 +278,31 @@ private struct NoteRow: View {
     }
 }
 
-/// Перестановка заметок перетаскиванием: карточка «раздвигает» соседей прямо во время движения.
-private struct NoteDropDelegate: DropDelegate {
-    let target: NotesStore.Note
-    let store: NotesStore
-    @Binding var dragging: NotesStore.Note?
+/// В режиме «Изменить» карточку тянут мышью внутри списка (своё перетаскивание, без системного:
+/// никаких «залипших» полупрозрачных карточек, если отпустить мимо). Вне режима заметку можно
+/// перетащить в любое приложение как текст.
+private struct NoteDragModifier: ViewModifier {
+    let editing: Bool
+    let text: String
+    var onChanged: (CGFloat) -> Void
+    var onEnded: () -> Void
 
-    func validateDrop(info: DropInfo) -> Bool { dragging != nil }
-
-    func dropEntered(info: DropInfo) {
-        guard let dragging, dragging.id != target.id,
-              let from = store.notes.firstIndex(where: { $0.id == dragging.id }),
-              let to = store.notes.firstIndex(where: { $0.id == target.id }) else { return }
-        withAnimation(Theme.content) {
-            store.move(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
+    func body(content: Content) -> some View {
+        if editing {
+            content.gesture(
+                DragGesture(minimumDistance: 3, coordinateSpace: .named("notes"))
+                    .onChanged { value in onChanged(value.translation.height) }
+                    .onEnded { _ in onEnded() }
+            )
+        } else {
+            content.onDrag { NSItemProvider(object: text as NSString) }
         }
     }
+}
 
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        dragging = nil
-        return true
+private struct NoteFramesKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] = [:]
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { $1 }
     }
 }

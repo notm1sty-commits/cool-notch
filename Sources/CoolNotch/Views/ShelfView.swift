@@ -191,7 +191,12 @@ private struct ShelfItemTile: View {
         .onHover { value in
             withAnimation(Theme.micro) { hovering = value }
         }
-        .onDrag { NSItemProvider(object: item.url as NSURL) }
+        .onDrag {
+            // Во время системного перетаскивания наведение не сообщается — снимаем подсветку сразу,
+            // иначе после отпускания плитка оставалась подсвеченной.
+            hovering = false
+            return NSItemProvider(object: item.url as NSURL)
+        }
         .onTapGesture(count: 2) { shelf.open(item) }
         .help(item.url.path)
         .contextMenu {
