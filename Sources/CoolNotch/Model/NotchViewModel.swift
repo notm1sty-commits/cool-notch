@@ -397,13 +397,19 @@ final class NotchViewModel {
         return size
     }
 
+    /// Сколько занимает содержимое текущей всплывашки (оно меряет себя само, см. BannerContentHeight).
+    var bannerContentHeight: CGFloat?
+
     var bannerSize: CGSize {
+        // Пока содержимое не измерено — близкая оценка, потом форма подстроится точно.
+        let estimate: CGFloat
         if case .airpods? = banner?.kind {
-            return CGSize(width: openSize.width, height: notchSize.height + 72)
+            estimate = 70
+        } else {
+            estimate = 70 + (banner?.expanded == true ? 16 : 0) + (banner?.source != nil ? 14 : 0)
         }
-        let extra: CGFloat = (banner?.expanded == true ? 18 : 0) + (banner?.source != nil ? 15 : 0)
         // Та же ширина, что у раскрытой чёлки — баннеры и панель выглядят одним целым.
-        return CGSize(width: openSize.width, height: notchSize.height + 62 + extra)
+        return CGSize(width: openSize.width, height: notchSize.height + (bannerContentHeight ?? estimate))
     }
 
     var openSize: CGSize {
@@ -557,6 +563,7 @@ final class NotchViewModel {
     }
 
     private func show(_ newBanner: NotchBanner) {
+        bannerContentHeight = nil
         banner = newBanner
         bannerTask?.cancel()
         bannerTask = Task { [weak self] in

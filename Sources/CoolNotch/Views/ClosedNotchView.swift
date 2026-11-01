@@ -197,8 +197,8 @@ struct BannerView: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.bottom, 4)
-            .frame(maxHeight: .infinity)
+            .modifier(BannerContentHeight())
+            Spacer(minLength: 0)
         }
     }
 
@@ -263,7 +263,8 @@ struct AirPodsCard: View {
                 batteries
             }
             .padding(.horizontal, 18)
-            .frame(maxHeight: .infinity)
+            .modifier(BannerContentHeight())
+            Spacer(minLength: 0)
         }
     }
 
@@ -341,5 +342,40 @@ private struct BatteryRing: View {
 
     private var color: Color {
         level <= 20 ? Color(red: 1, green: 0.62, blue: 0.04) : Theme.green
+    }
+}
+
+/// Высота всплывашки = её содержимое + одинаковые отступы (сверху от выреза и снизу от последнего
+/// элемента). Содержимое меряет себя само, и форма чёлки подстраивается ровно под него.
+struct BannerContentHeight: ViewModifier {
+    @Environment(NotchViewModel.self) var vm
+
+    static let topGap: CGFloat = 6
+    static let bottomGap: CGFloat = 14
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.top, Self.topGap)
+            .padding(.bottom, Self.bottomGap)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: BannerHeightKey.self, value: geo.size.height)
+                }
+            )
+            .onPreferenceChange(BannerHeightKey.self) { height in
+                MainActor.assumeIsolated {
+                    if height > 0, abs((vm.bannerContentHeight ?? 0) - height) > 0.5 {
+                        vm.bannerContentHeight = height
+                    }
+                }
+            }
+    }
+}
+
+private struct BannerHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
