@@ -198,7 +198,7 @@ final class NowPlayingService {
             if source == player { clear() }
             return
         }
-        runner.run(Self.stateScript(for: player), parse: AppleScriptRunner.parseSnapshot) { [weak self] snapshot in
+        runner.run(Self.stateScript(for: player), parse: { AppleScriptRunner.parseSnapshot($0) }) { [weak self] snapshot in
             self?.apply(snapshot, from: player)
         }
     }
