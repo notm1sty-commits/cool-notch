@@ -59,38 +59,23 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-# Иконка в стиле macOS 26 (светлая, тёмная, прозрачная и тонированная) — из документа Icon Composer
-# Resources/AppIcon.icon. Собирает её только actool из Xcode 26; без него остаётся классическая.
-find_xcode26() {
-  local candidate version
-  for candidate in /Applications/Xcode_26*.app /Applications/Xcode-26*.app /Applications/Xcode.app "$(xcode-select -p 2>/dev/null)/../.."; do
-    [[ -x "$candidate/Contents/Developer/usr/bin/actool" ]] || continue
-    version="$("$candidate/Contents/Developer/usr/bin/xcodebuild" -version 2>/dev/null | awk 'NR==1 {print $2}')"
-    if [[ "${version%%.*}" =~ ^[0-9]+$ ]] && (( ${version%%.*} >= 26 )); then
-      (cd "$candidate" && pwd)
-      return 0
-    fi
-  done
-  return 1
-}
-if XCODE26="$(find_xcode26)"; then
+# Иконка в стиле macOS 26 (светлая, тёмная, прозрачная и тонированная) — Assets.car из документа
+# Icon Composer. Берём готовый (CI собирает его отдельно на macOS 26) или собираем сами, если можем.
+ICON_CAR="${PREBUILT_ICON_CAR:-}"
+if [[ -z "$ICON_CAR" || ! -f "$ICON_CAR" ]]; then
   ICON_OUT="$(mktemp -d)"
-  if DEVELOPER_DIR="$XCODE26/Contents/Developer" xcrun actool Resources/AppIcon.icon \
-       --compile "$ICON_OUT" \
-       --output-format human-readable-text --warnings --errors \
-       --output-partial-info-plist "$ICON_OUT/partial.plist" \
-       --app-icon AppIcon --include-all-app-icons \
-       --enable-on-demand-resources NO --development-region en \
-       --target-device mac --platform macosx --minimum-deployment-target 14.0 \
-     && [[ -f "$ICON_OUT/Assets.car" ]]; then
-    cp "$ICON_OUT/Assets.car" "$APP_DIR/Contents/Resources/Assets.car"
-    /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$APP_DIR/Contents/Info.plist"
-    echo "  иконка macOS 26 собрана ($(basename "$XCODE26"))"
+  if ./scripts/build-icon.sh "$ICON_OUT" >/dev/null 2>&1; then
+    ICON_CAR="$ICON_OUT/Assets.car"
   else
-    echo "  ⚠︎ actool не справился — остаётся классическая иконка"
+    ICON_CAR=""
   fi
+fi
+if [[ -n "$ICON_CAR" ]]; then
+  cp "$ICON_CAR" "$APP_DIR/Contents/Resources/Assets.car"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$APP_DIR/Contents/Info.plist"
+  echo "  + иконка macOS 26"
 else
-  echo "  Xcode 26 не найден — только классическая иконка"
+  echo "  только классическая иконка (для macOS 26 нужен Xcode 26 на macOS 26)"
 fi
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then

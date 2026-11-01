@@ -68,7 +68,7 @@ swift run                        # быстрый запуск для разра
 Иконку и фон установщика рисует скрипт `scripts/make_icon.py` (Python + Pillow):
 
 - `Resources/AppIcon.png` — классическая иконка для macOS 14–15;
-- `Resources/AppIcon.icon` — документ Icon Composer: на macOS 26 система сама делает из него светлую, тёмную, прозрачную и тонированную иконку (собирается, если на машине есть Xcode 26);
+- `Resources/AppIcon.icon` — документ Icon Composer: на macOS 26 система сама делает из него светлую, тёмную, прозрачную и тонированную иконку (собирает `scripts/build-icon.sh`, нужны Xcode 26 и macOS 26; в CI — отдельным шагом);
 - `Resources/DMG/` — фон окна установщика. Красивое окно собирает `create-dmg` (`brew install create-dmg`), без него получится обычный DMG.
 
 ## Устройство проекта

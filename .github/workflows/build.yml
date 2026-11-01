@@ -14,11 +14,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Иконку в формате macOS 26 (Icon Composer) умеет собрать только Xcode 26 на macOS 26.
+  # Само приложение собирается как раньше; если этот шаг не получится, останется классическая иконка.
+  icon:
+    runs-on: macos-26
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile icon
+        run: ./scripts/build-icon.sh "$RUNNER_TEMP/icon"
+      - name: Upload icon
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-icon
+          path: ${{ runner.temp }}/icon/Assets.car
+          if-no-files-found: error
+
   build:
+    needs: icon
+    if: ${{ !cancelled() }}
     runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Icon for macOS 26
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: app-icon
+          path: ${{ runner.temp }}/icon
 
       - name: Toolchain
         run: |
@@ -58,6 +84,7 @@ jobs:
         env:
           VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.3.{0}', github.run_number) }}
           BUILD_NUMBER: ${{ github.run_number }}
+          PREBUILT_ICON_CAR: ${{ runner.temp }}/icon/Assets.car
         run: |
           VERSION="${VERSION#v}" ./scripts/build-app.sh
 
