@@ -17,8 +17,6 @@ struct NotchBanner: Identifiable, Equatable {
         case artwork
         /// Иконка приложения по bundle id.
         case app(String)
-        /// Сонная батарейка-персонаж для очень низкого заряда.
-        case sleepyBattery(Int)
     }
 
     enum Action: Equatable {
@@ -274,14 +272,24 @@ final class NotchViewModel {
 
     // MARK: Media deck
 
-    /// Низкий (до 20 %) и очень низкий (до 10 %) заряд — разные всплывашки, обе с процентом.
+    /// Низкий заряд: 20 %, 10 % и 5 % — одна и та же всплывашка с процентом, с каждой ступенью
+    /// строже: оранжевая подложка, затем красная и почти пустая батарея.
     func showLowBattery(level: Int) {
-        if level <= 10 {
+        let red = Color(red: 1, green: 0.27, blue: 0.23)
+        if level <= 5 {
             post(NotchBanner(
-                icon: .sleepyBattery(level),
-                tint: .red,
-                title: "Почти разрядился · \(level)%",
-                subtitle: "Подключи зарядку, а то я усну",
+                icon: .symbol("battery.0percent"),
+                tint: red,
+                title: "Критический заряд · \(level)%",
+                subtitle: "Mac скоро выключится — подключи зарядку",
+                duration: 7
+            ))
+        } else if level <= 10 {
+            post(NotchBanner(
+                icon: .symbol("battery.0percent"),
+                tint: red,
+                title: "Очень низкий заряд · \(level)%",
+                subtitle: "Подключи зарядку",
                 duration: 6
             ))
         } else {

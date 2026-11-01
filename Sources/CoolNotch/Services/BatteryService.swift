@@ -78,7 +78,8 @@ final class BatteryService {
                 onPluggedIn?()
             }
             if !plugged, newLevel <= 20 {
-                let threshold = newLevel <= 10 ? 10 : 20
+                // Три ступени: 20 %, 10 % и 5 % — о каждой предупреждаем один раз.
+                let threshold = newLevel <= 5 ? 5 : (newLevel <= 10 ? 10 : 20)
                 if lastWarnedLevel != threshold {
                     lastWarnedLevel = threshold
                     if didLoadOnce { onLowBattery?() }

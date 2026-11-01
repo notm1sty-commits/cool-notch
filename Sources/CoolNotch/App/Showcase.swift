@@ -126,8 +126,12 @@ final class Showcase {
         vm.showLowBattery(level: 20)
         try await wait(5.6)
 
-        step = "Почти разрядился"
-        vm.showLowBattery(level: 8)
+        step = "Очень низкий заряд"
+        vm.showLowBattery(level: 10)
         try await wait(6.6)
+
+        step = "Критический заряд"
+        vm.showLowBattery(level: 5)
+        try await wait(7.6)
     }
 }

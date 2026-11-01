@@ -254,9 +254,6 @@ struct BannerView: View {
                     .frame(width: 42, height: 42)
                     .glass(11)
             }
-        case .sleepyBattery(let level):
-            SleepyBattery(level: level)
-                .frame(width: 50, height: 50)
         case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 17, weight: .semibold))
@@ -456,24 +453,3 @@ private struct BannerHeightKey: PreferenceKey {
     }
 }
 
-/// «Почти разрядился»: системный значок пустой батареи и маленькое «zzz», у которого буквы
-/// по очереди мерцают. Только мерцание — ничего не двигается, поэтому значок появляется
-/// ровно на своём месте вместе со всплывашкой.
-struct SleepyBattery: View {
-    var level: Int
-
-    var body: some View {
-        ZStack {
-            Circle().fill(Color.white.opacity(0.08))
-            Image(systemName: "battery.0percent")
-                .font(.system(size: 19, weight: .medium))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(Color(red: 1, green: 0.27, blue: 0.23), .white.opacity(0.85))
-            Image(systemName: "zzz")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.white.opacity(0.85))
-                .symbolEffect(.variableColor.iterative.dimInactiveLayers, options: .repeating)
-                .offset(x: 13, y: -13)
-        }
-    }
-}
