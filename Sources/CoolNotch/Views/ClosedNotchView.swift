@@ -1,21 +1,26 @@
 import SwiftUI
 
-/// Свёрнутая чёлка: по бокам от выреза показываем «живые активности».
+/// Свёрнутая чёлка: по бокам от выреза — «живые активности».
 struct ClosedNotchView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
+        let ear = max(0, (vm.shapeSize.width - vm.notchSize.width) / 2)
         HStack(spacing: 0) {
-            leading
-                .frame(width: vm.earWidth, height: vm.notchSize.height)
+            ZStack { leading }
+                .frame(width: ear, height: vm.notchSize.height)
             Color.clear
                 .frame(width: vm.notchSize.width)
-            trailing
-                .frame(width: vm.earWidth, height: vm.notchSize.height)
+            ZStack { trailing }
+                .frame(width: ear, height: vm.notchSize.height)
         }
         .frame(height: vm.notchSize.height)
-        .font(.system(size: 12, weight: .semibold, design: .rounded))
+        .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(.white)
+    }
+
+    private var earTransition: some Transition {
+        RevealTransition(blur: vm.lowPower ? 0 : 4, scale: 0.6, offset: .zero)
     }
 
     @ViewBuilder
@@ -23,27 +28,16 @@ struct ClosedNotchView: View {
         switch vm.activity {
         case .music?:
             ArtworkView(image: vm.nowPlaying.artwork, size: max(vm.notchSize.height - 12, 16), corner: 5)
-                .padding(.leading, 4)
-                .transition(.scale.combined(with: .opacity))
+                .transition(earTransition)
         case .timer?:
             TimerRing(progress: vm.timer.progress, color: .orange, lineWidth: 2.5)
-                .frame(width: 15, height: 15)
-                .padding(.leading, 4)
+                .frame(width: 14, height: 14)
+                .transition(earTransition)
         case .charging?:
             Image(systemName: "bolt.fill")
                 .foregroundStyle(.green)
                 .symbolEffect(.bounce, value: vm.pulse)
-                .padding(.leading, 4)
-        case .lowBattery?:
-            Image(systemName: "battery.25percent")
-                .foregroundStyle(.red)
-                .symbolEffect(.pulse)
-                .padding(.leading, 4)
-        case .timerDone?:
-            Image(systemName: "bell.fill")
-                .foregroundStyle(.orange)
-                .symbolEffect(.bounce, options: .repeating, value: vm.pulse)
-                .padding(.leading, 6)
+                .transition(earTransition)
         case nil:
             EmptyView()
         }
@@ -53,27 +47,89 @@ struct ClosedNotchView: View {
     private var trailing: some View {
         switch vm.activity {
         case .music?:
-            EqualizerBars(color: vm.nowPlaying.accent, isPlaying: vm.nowPlaying.isPlaying)
-                .frame(height: 14)
-                .padding(.trailing, 4)
+            EqualizerView(
+                color: vm.nowPlaying.accentNSColor,
+                isPlaying: vm.nowPlaying.isPlaying,
+                animated: !vm.lowPower
+            )
+            .frame(width: 22, height: 14)
+            .transition(earTransition)
         case .timer?:
             Text(vm.timer.remainingText)
                 .monospacedDigit()
-                .foregroundStyle(vm.timer.state == .paused ? Color.white.opacity(0.5) : Color.orange)
-                .padding(.trailing, 2)
+                .contentTransition(.numericText(countsDown: true))
+                .animation(Theme.micro, value: vm.timer.remainingText)
+                .foregroundStyle(vm.timer.state == .paused ? Theme.secondaryText : Color.orange)
+                .transition(earTransition)
         case .charging?:
             Text("\(vm.battery.level)%")
                 .monospacedDigit()
+                .contentTransition(.numericText())
                 .foregroundStyle(.green)
-        case .lowBattery?:
-            Text("\(vm.battery.level)%")
-                .monospacedDigit()
-                .foregroundStyle(.red)
-        case .timerDone?:
-            Text("Готово!")
-                .foregroundStyle(.orange)
+                .transition(earTransition)
         case nil:
             EmptyView()
+        }
+    }
+}
+
+/// Уведомление, «выезжающее» из чёлки.
+struct BannerView: View {
+    @Environment(NotchViewModel.self) var vm
+    let banner: NotchBanner
+
+    @State var appeared = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Color.clear.frame(height: vm.notchSize.height)
+            HStack(spacing: 12) {
+                icon
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(banner.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    if let subtitle = banner.subtitle {
+                        Text(subtitle)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                if banner.icon == .artwork {
+                    EqualizerView(
+                        color: vm.nowPlaying.accentNSColor,
+                        isPlaying: vm.nowPlaying.isPlaying,
+                        animated: !vm.lowPower
+                    )
+                    .frame(width: 22, height: 14)
+                }
+            }
+            .padding(.horizontal, 18)
+            .frame(maxHeight: .infinity)
+        }
+        .foregroundStyle(.white)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            vm.dismissBanner()
+            vm.open(pinned: true)
+        }
+        .onAppear { appeared = true }
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        switch banner.icon {
+        case .artwork:
+            ArtworkView(image: vm.nowPlaying.artwork, size: 34, corner: 8)
+        case .symbol(let name):
+            Image(systemName: name)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(banner.tint)
+                .symbolEffect(.bounce, value: appeared)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(banner.tint.opacity(0.16)))
         }
     }
 }

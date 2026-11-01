@@ -1,6 +1,6 @@
 import AppKit
 
-/// Снимок состояния плеера, полученный через AppleScript.
+/// Снимок состояния плеера.
 struct PlayerSnapshot: Sendable {
     var state: String
     var title: String
@@ -13,12 +13,11 @@ struct PlayerSnapshot: Sendable {
 
 /// Выполняет AppleScript на отдельной очереди, чтобы не тормозить интерфейс.
 final class AppleScriptRunner: @unchecked Sendable {
-    private let queue = DispatchQueue(label: "cool-notch.applescript", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "cool-notch.applescript", qos: .utility)
 
     func run(_ source: String) {
         queue.async {
-            var error: NSDictionary?
-            _ = NSAppleScript(source: source)?.executeAndReturnError(&error)
+            _ = Self.execute(source)
         }
     }
 
@@ -27,14 +26,33 @@ final class AppleScriptRunner: @unchecked Sendable {
         parse: @escaping @Sendable (NSAppleEventDescriptor) -> T?,
         completion: @escaping @MainActor (T?) -> Void
     ) {
+        perform({ _ in
+            let result = Self.execute(source)
+            return result.descriptor.flatMap(parse)
+        }, completion: completion)
+    }
+
+    /// Выполняет произвольную работу на очереди AppleScript и возвращает результат на главный поток.
+    func perform<T: Sendable>(
+        _ work: @escaping @Sendable (AppleScriptRunner) -> T,
+        completion: @escaping @MainActor (T) -> Void
+    ) {
         queue.async {
-            var error: NSDictionary?
-            let descriptor = NSAppleScript(source: source)?.executeAndReturnError(&error)
-            let value: T? = (error == nil) ? descriptor.flatMap(parse) : nil
+            let value = work(self)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { completion(value) }
             }
         }
+    }
+
+    /// Синхронное выполнение. Вызывать только внутри `perform`.
+    static func execute(_ source: String) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
+        var error: NSDictionary?
+        let descriptor = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error {
+            return (nil, error["NSAppleScriptErrorMessage"] as? String ?? "AppleScript error")
+        }
+        return (descriptor, nil)
     }
 
     static func parseSnapshot(_ d: NSAppleEventDescriptor) -> PlayerSnapshot? {

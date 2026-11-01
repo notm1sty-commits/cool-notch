@@ -1,18 +1,23 @@
+import ApplicationServices
 import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage(Pref.hoverDelay) var hoverDelay = 0.12
+    @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
     @AppStorage(Pref.showMusicActivity) var showMusic = true
     @AppStorage(Pref.showChargingActivity) var showCharging = true
     @AppStorage(Pref.showLowBattery) var showLowBattery = true
+    @AppStorage(Pref.trackBanners) var trackBanners = true
+    @AppStorage(Pref.deviceBanners) var deviceBanners = true
+    @AppStorage(Pref.browserMusic) var browserMusic = false
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
     @AppStorage(Pref.openOnFileDrag) var openOnFileDrag = true
     @AppStorage(Pref.timerSound) var timerSound = true
 
     @State var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State var loginError: String?
+    @State var controlAccess = AXIsProcessTrusted()
 
     var body: some View {
         Form {
@@ -34,22 +39,49 @@ struct SettingsView: View {
                 Toggle("Открывать полку, когда тащишь файл к чёлке", isOn: $openOnFileDrag)
             }
 
-            Section("Живые активности в свёрнутой чёлке") {
+            Section("Уведомления в чёлке") {
+                Toggle("Смена трека", isOn: $trackBanners)
+                Toggle("Подключение наушников и колонок", isOn: $deviceBanners)
+                Toggle("Низкий заряд батареи", isOn: $showLowBattery)
+                Toggle("Звук по окончании таймера", isOn: $timerSound)
+            }
+
+            Section("Живые активности по бокам от выреза") {
                 Toggle("Музыка: обложка и эквалайзер", isOn: $showMusic)
                 Toggle("Анимация при подключении зарядки", isOn: $showCharging)
-                Toggle("Предупреждение о низком заряде", isOn: $showLowBattery)
-                Toggle("Звук по окончании таймера", isOn: $timerSound)
+            }
+
+            Section("Музыка") {
+                Toggle("Музыка из браузера (Яндекс Музыка, YouTube, SoundCloud, VK)", isOn: $browserMusic)
+                if browserMusic {
+                    Text("Один раз включи в браузере разрешение:\n• Chrome / Яндекс Браузер / Edge: меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events».\n• Safari: «Настройки» → «Дополнения» → «Показывать функции для веб-разработчиков», затем меню «Разработка» → «Разрешить JavaScript из Apple Events».")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Управление любым плеером")
+                        Text("Кнопки ⏯ ⏭ ⏮ для приложения Яндекс Музыки и других плееров. Нужен «Универсальный доступ».")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    if controlAccess {
+                        Label("Разрешено", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        Button("Разрешить") {
+                            MediaKeys.requestAccess()
+                        }
+                    }
+                }
             }
 
             Section("Буфер обмена") {
                 Toggle("Сохранять историю копирования", isOn: $clipboardHistory)
                 Text("История хранится только в памяти и стирается при выходе. Пароли из менеджеров паролей пропускаются.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Музыка") {
-                Text("Поддерживаются Spotify и Музыка (Apple Music). При первом запуске macOS спросит разрешение управлять ими — нажми «OK».")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -65,7 +97,10 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 560)
+        .frame(width: 480, height: 640)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            controlAccess = AXIsProcessTrusted()
+        }
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {

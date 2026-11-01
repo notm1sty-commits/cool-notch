@@ -31,11 +31,10 @@ final class ClipboardService {
         lastChangeCount = pasteboard.changeCount
         isEnabled = Pref.bool(Pref.clipboardHistory)
         if isEnabled { capture() }
-        let timer = Timer(timeInterval: 0.6, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.poll() }
+        // Проверка буфера — это одно чтение счётчика, но всё равно делаем её редко и с допуском.
+        timer = Timer.coalesced(interval: 1.0, tolerance: 0.4) { [weak self] in
+            self?.poll()
         }
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
     }
 
     func copy(_ entry: Entry) {
@@ -55,6 +54,7 @@ final class ClipboardService {
     }
 
     private func poll() {
+        guard !SystemState.screensAsleep else { return }
         let enabled = Pref.bool(Pref.clipboardHistory)
         if enabled != isEnabled {
             isEnabled = enabled

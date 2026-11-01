@@ -14,27 +14,39 @@ struct NotchRootView: View {
 
 private struct NotchContainer: View {
     @Environment(NotchViewModel.self) var vm
-
-    private var spring: Animation { .spring(response: 0.42, dampingFraction: 0.78) }
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
 
     var body: some View {
         let size = vm.shapeSize
         let shape = NotchShape(topRadius: vm.topRadius, bottomRadius: vm.bottomRadius)
+        let simple = reduceMotion || vm.lowPower
 
         ZStack(alignment: .top) {
-            if vm.isOpen {
+            switch vm.presentation {
+            case .open:
                 ExpandedNotchView()
                     .transition(
-                        AnyTransition.asymmetric(
-                            insertion: AnyTransition.opacity
-                                .combined(with: AnyTransition.scale(scale: 0.92, anchor: .top))
-                                .animation(spring.delay(0.05)),
-                            removal: AnyTransition.opacity.animation(.easeOut(duration: 0.12))
+                        AsymmetricTransition(
+                            insertion: RevealTransition(blur: simple ? 0 : 12, scale: 0.94, offset: CGSize(width: 0, height: -12))
+                                .animation(simple ? Theme.reduced : Theme.content.delay(0.06)),
+                            removal: OpacityTransition()
+                                .animation(.easeOut(duration: 0.12))
                         )
                     )
-            } else {
+            case .banner(let banner):
+                BannerView(banner: banner)
+                    .id(banner.id)
+                    .transition(
+                        AsymmetricTransition(
+                            insertion: RevealTransition(blur: simple ? 0 : 8, scale: 0.9, offset: CGSize(width: 0, height: -6))
+                                .animation(simple ? Theme.reduced : Theme.content.delay(0.08)),
+                            removal: OpacityTransition()
+                                .animation(.easeOut(duration: 0.12))
+                        )
+                    )
+            case .closed:
                 ClosedNotchView()
-                    .transition(AnyTransition.opacity.animation(.easeInOut(duration: 0.18)))
+                    .transition(OpacityTransition().animation(.easeInOut(duration: 0.18)))
             }
         }
         .frame(width: size.width, height: size.height, alignment: .top)
@@ -44,24 +56,43 @@ private struct NotchContainer: View {
         .overlay {
             if vm.isDropTargeted {
                 shape
-                    .stroke(Color.accentColor.opacity(0.9), lineWidth: 2)
-                    .blur(radius: 0.5)
+                    .stroke(Color.white.opacity(0.5), lineWidth: 1.5)
+                    .transition(.opacity)
             }
         }
-        .shadow(color: .black.opacity(vm.isOpen ? 0.55 : 0), radius: 18, y: 8)
+        .shadow(color: .black.opacity(shadowOpacity), radius: vm.isOpen ? 22 : 12, y: vm.isOpen ? 10 : 5)
         .contentShape(shape)
         .onDrop(of: [.fileURL], isTargeted: dropBinding) { providers in
             vm.handleDrop(providers)
         }
-        .animation(spring, value: vm.isOpen)
-        .animation(spring, value: vm.activity)
-        .animation(spring, value: vm.notchSize)
+        .animation(shapeAnimation(simple: simple), value: size)
+        .animation(shapeAnimation(simple: simple), value: vm.bottomRadius)
+        .animation(Theme.micro, value: vm.isDropTargeted)
+    }
+
+    private var shadowOpacity: Double {
+        switch vm.presentation {
+        case .open: return 0.55
+        case .banner: return 0.4
+        case .closed: return 0
+        }
+    }
+
+    private func shapeAnimation(simple: Bool) -> Animation {
+        if simple { return Theme.reduced }
+        switch vm.presentation {
+        case .open: return Theme.open
+        case .banner: return Theme.morph
+        case .closed: return vm.isHovering ? Theme.hover : Theme.morph
+        }
     }
 
     private var dropBinding: Binding<Bool> {
         Binding(
             get: { vm.isDropTargeted },
-            set: { vm.isDropTargeted = $0 }
+            set: { newValue in
+                if vm.isDropTargeted != newValue { vm.isDropTargeted = newValue }
+            }
         )
     }
 }

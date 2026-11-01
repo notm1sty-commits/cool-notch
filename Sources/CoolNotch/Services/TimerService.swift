@@ -11,7 +11,8 @@ final class TimerService {
     private(set) var total: TimeInterval = 0
     private(set) var remaining: TimeInterval = 0
 
-    @ObservationIgnored var onFinish: (@MainActor () -> Void)?
+    /// Вызывается по окончании; параметр — сколько минут был таймер.
+    @ObservationIgnored var onFinish: (@MainActor (Int) -> Void)?
     @ObservationIgnored private var endDate: Date?
     @ObservationIgnored private var ticker: Timer?
 
@@ -62,11 +63,10 @@ final class TimerService {
 
     private func startTicker() {
         stopTicker()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick() }
+        // Полсекунды хватает для плавного кольца; допуск даёт системе экономить пробуждения.
+        ticker = Timer.coalesced(interval: 0.5, tolerance: 0.15) { [weak self] in
+            self?.tick()
         }
-        RunLoop.main.add(timer, forMode: .common)
-        ticker = timer
     }
 
     private func stopTicker() {
@@ -77,12 +77,12 @@ final class TimerService {
     private func tick() {
         guard let endDate else { return }
         let left = max(0, endDate.timeIntervalSinceNow)
-        // Обновляем раз в «видимую» долю секунды, чтобы не дёргать интерфейс зря.
-        if abs(left - remaining) >= 0.2 || left == 0 { remaining = left }
+        remaining = left
         if left <= 0 {
+            let minutes = Int((total / 60).rounded())
             stop()
             if Pref.bool(Pref.timerSound) { NSSound(named: "Glass")?.play() }
-            onFinish?()
+            onFinish?(minutes)
         }
     }
 

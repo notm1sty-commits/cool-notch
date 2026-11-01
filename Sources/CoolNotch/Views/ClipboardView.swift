@@ -8,35 +8,38 @@ struct ClipboardView: View {
 
     var body: some View {
         let clipboard = vm.clipboard
-        if !clipboard.isEnabled {
-            PlaceholderView(
-                icon: "doc.on.clipboard",
-                title: "История буфера выключена",
-                subtitle: "Включить можно в настройках"
-            )
-        } else if clipboard.entries.isEmpty {
-            PlaceholderView(
-                icon: "doc.on.clipboard",
-                title: "Скопируй любой текст",
-                subtitle: "Последние 30 копирований появятся здесь. Пароли не сохраняются."
-            )
-        } else {
-            ScrollView(.vertical, showsIndicators: false) {
-                LazyVGrid(columns: columns, spacing: 6) {
-                    ForEach(clipboard.entries) { entry in
-                        ClipRow(entry: entry, copied: copiedID == entry.id) {
-                            clipboard.copy(entry)
-                            copiedID = clipboard.entries.first?.id
-                            if Pref.bool(Pref.haptics) {
-                                NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        ZStack {
+            if !clipboard.isEnabled {
+                PlaceholderView(
+                    icon: "doc.on.clipboard",
+                    title: "История буфера выключена",
+                    subtitle: "Включить можно в настройках"
+                )
+            } else if clipboard.entries.isEmpty {
+                PlaceholderView(
+                    icon: "doc.on.clipboard",
+                    title: "Скопируй любой текст",
+                    subtitle: "Последние 30 копирований появятся здесь. Пароли не сохраняются."
+                )
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVGrid(columns: columns, spacing: 6) {
+                        ForEach(clipboard.entries) { entry in
+                            ClipRow(entry: entry, copied: copiedID == entry.id) {
+                                clipboard.copy(entry)
+                                withAnimation(Theme.micro) { copiedID = clipboard.entries.first?.id }
+                                if Pref.bool(Pref.haptics) {
+                                    NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+                                }
+                            } onDelete: {
+                                withAnimation(Theme.content) { clipboard.remove(entry) }
                             }
-                        } onDelete: {
-                            withAnimation(.snappy) { clipboard.remove(entry) }
                         }
                     }
                 }
             }
         }
+        .animation(Theme.content, value: clipboard.entries.map(\.id))
     }
 }
 
@@ -50,34 +53,33 @@ private struct ClipRow: View {
 
     var body: some View {
         Button(action: onCopy) {
-            HStack(spacing: 8) {
-                Image(systemName: copied ? "checkmark.circle.fill" : icon)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(copied ? Color.green : Color.white.opacity(0.5))
-                    .frame(width: 18)
+            HStack(spacing: 9) {
+                Image(systemName: copied ? "checkmark" : icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(copied ? Color.green : Theme.tertiaryText)
                     .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 16)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(preview)
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    Text(subtitle)
+                    Text(copied ? "Скопировано" : subtitle)
                         .font(.system(size: 9.5))
-                        .foregroundStyle(.white.opacity(0.4))
+                        .foregroundStyle(copied ? Color.green.opacity(0.8) : Theme.tertiaryText)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 9)
+            .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(hovering ? 0.12 : 0.06))
-            )
+            .surface(12, highlighted: hovering)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .buttonStyle(PressableButtonStyle(scale: 0.97))
+        .onHover { value in
+            withAnimation(Theme.micro) { hovering = value }
+        }
         .help(String(entry.text.prefix(500)))
         .contextMenu {
             Button("Скопировать", action: onCopy)

@@ -9,27 +9,58 @@ struct NowPlayingTrack: Equatable {
     var duration: Double
 }
 
-enum PlayerSource: String {
-    case music, spotify, system
+enum PlayerSource: Equatable {
+    case music
+    case spotify
+    case browser(BrowserKind)
 
-    var bundleID: String? {
+    var bundleID: String {
         switch self {
         case .music: return "com.apple.Music"
         case .spotify: return "com.spotify.client"
-        case .system: return nil
-        }
-    }
-
-    var appName: String {
-        switch self {
-        case .music: return "Music"
-        case .spotify: return "Spotify"
-        case .system: return ""
+        case .browser(let kind): return kind.bundleID
         }
     }
 }
 
-/// Следит за тем, что играет в Музыке, Spotify (и в системе, где это разрешено).
+/// Плеер, который не сообщает название трека (например, приложение Яндекс Музыка),
+/// но которым можно управлять медиаклавишами.
+struct ExternalPlayer: Equatable {
+    let name: String
+    let bundleID: String
+    let icon: NSImage?
+}
+
+private enum MediaCommand {
+    case toggle, next, previous
+
+    var appleScript: String {
+        switch self {
+        case .toggle: return "playpause"
+        case .next: return "next track"
+        case .previous: return "previous track"
+        }
+    }
+
+    var key: MediaKeys.Key {
+        switch self {
+        case .toggle: return .playPause
+        case .next: return .next
+        case .previous: return .previous
+        }
+    }
+
+    var remote: MediaRemote.Command {
+        switch self {
+        case .toggle: return .togglePlayPause
+        case .next: return .nextTrack
+        case .previous: return .previousTrack
+        }
+    }
+}
+
+/// Следит за тем, что играет: Музыка и Spotify (AppleScript), браузер (Media Session),
+/// а также за плеерами без данных о треке — ими управляем медиаклавишами.
 @MainActor
 @Observable
 final class NowPlayingService {
@@ -37,18 +68,34 @@ final class NowPlayingService {
     private(set) var isPlaying = false
     private(set) var artwork: NSImage?
     private(set) var accent: Color = .white
+    private(set) var accentNSColor: NSColor = .white
     private(set) var source: PlayerSource?
+    private(set) var sourceName = ""
+    private(set) var sourceIcon: NSImage?
     private(set) var elapsed: Double = 0
     private(set) var elapsedTimestamp = Date()
+    private(set) var externalPlayer: ExternalPlayer?
+    private(set) var canControlAnyPlayer = false
+    private(set) var browserNeedsSetup = false
 
-    private let runner = AppleScriptRunner()
-    private let mediaRemote = MediaRemote()
+    @ObservationIgnored var onTrackChange: (@MainActor (NowPlayingTrack) -> Void)?
+
+    private let runner: AppleScriptRunner
+    private let browser: BrowserMediaSource
+    private let mediaRemote: MediaRemote?
     @ObservationIgnored private var artworkKey: String?
     @ObservationIgnored private var distributedObservers: [DistributedObserver] = []
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var pollTimer: Timer?
+    @ObservationIgnored private let launchDate = Date()
+    @ObservationIgnored private var iconCache: [String: NSImage] = [:]
 
     init() {
+        runner = AppleScriptRunner()
+        browser = BrowserMediaSource(runner: runner)
+        mediaRemote = MediaRemote()
+        canControlAnyPlayer = MediaKeys.isTrusted
+
         distributedObservers = [
             DistributedObserver(name: "com.apple.Music.playerInfo") { [weak self] in
                 Task { @MainActor in self?.refresh(.music) }
@@ -58,32 +105,24 @@ final class NowPlayingService {
             },
         ]
 
-        observers.append(NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didTerminateApplicationNotification,
-            object: nil,
-            queue: .main
+        let workspace = NSWorkspace.shared.notificationCenter
+        observers.append(workspace.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
         ) { [weak self] note in
             let bundleID = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
             Task { @MainActor in self?.appTerminated(bundleID) }
         })
+        observers.append(workspace.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.refreshExternalPlayer() }
+        })
 
-        if let mediaRemote {
-            mediaRemote.registerForNotifications()
-            observers.append(NotificationCenter.default.addObserver(
-                forName: MediaRemote.infoDidChange,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                Task { @MainActor in self?.refreshSystem() }
-            })
+        pollTimer = Timer.coalesced(interval: 5, tolerance: 0.3) { [weak self] in
+            self?.periodicRefresh()
         }
 
-        let timer = Timer(timeInterval: 4, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.periodicRefresh() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        pollTimer = timer
-
+        refreshExternalPlayer()
         refreshAll()
     }
 
@@ -97,104 +136,141 @@ final class NowPlayingService {
     }
 
     func togglePlayPause() {
-        let now = Date()
-        elapsed = position(at: now)
-        elapsedTimestamp = now
-        isPlaying.toggle()
-        perform(appleScript: "playpause", fallback: .togglePlayPause)
+        if track != nil {
+            let now = Date()
+            elapsed = position(at: now)
+            elapsedTimestamp = now
+            isPlaying.toggle()
+        }
+        perform(.toggle)
     }
 
-    func next() {
-        perform(appleScript: "next track", fallback: .nextTrack)
-    }
-
-    func previous() {
-        perform(appleScript: "previous track", fallback: .previousTrack)
-    }
+    func next() { perform(.next) }
+    func previous() { perform(.previous) }
 
     func seek(to seconds: Double) {
         elapsed = seconds
         elapsedTimestamp = Date()
         switch source {
         case .music?, .spotify?:
-            let app = source?.appName ?? ""
-            runner.run("tell application \"\(app)\" to set player position to \(String(format: "%.2f", seconds))")
+            runner.run("tell application id \"\(source?.bundleID ?? "")\" to set player position to \(String(format: "%.2f", seconds))")
             scheduleRefresh()
-        default:
-            mediaRemote?.seek(to: seconds)
+        case .browser(let kind)?:
+            browser.seek(in: kind, to: seconds)
+            scheduleRefresh()
+        case nil:
+            break
         }
     }
 
     func openSourceApp() {
-        guard let id = source?.bundleID ?? installedPlayers.first?.bundleID,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
+        let id = source?.bundleID ?? externalPlayer?.bundleID ?? installedPlayers.first?.bundleID
+        guard let id, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
     }
 
     func launch(_ player: PlayerSource) {
-        guard let id = player.bundleID,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: player.bundleID) else { return }
         NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
     }
 
     var installedPlayers: [PlayerSource] {
-        [PlayerSource.spotify, .music].filter { player in
-            guard let id = player.bundleID else { return false }
-            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil
+        [PlayerSource.spotify, .music].filter {
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleID) != nil
+        }
+    }
+
+    func displayName(for player: PlayerSource) -> String {
+        appInfo(for: player.bundleID).name
+    }
+
+    /// Запросить «Универсальный доступ» для медиаклавиш.
+    func requestControlAccess() {
+        MediaKeys.requestAccess()
+        Task { [weak self] in
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self else { return }
+                if MediaKeys.isTrusted {
+                    self.canControlAnyPlayer = true
+                    return
+                }
+            }
         }
     }
 
     // MARK: - Commands
 
-    private func perform(appleScript command: String, fallback: MediaRemote.Command) {
+    private func perform(_ command: MediaCommand) {
         switch source {
         case .music?, .spotify?:
-            let app = source?.appName ?? ""
-            runner.run("tell application \"\(app)\" to \(command)")
-            scheduleRefresh()
-        default:
-            if mediaRemote?.send(fallback) != true, let player = runningPlayers.first {
-                runner.run("tell application \"\(player.appName)\" to \(command)")
+            runner.run("tell application id \"\(source?.bundleID ?? "")\" to \(command.appleScript)")
+        case .browser(let kind)?:
+            if MediaKeys.isTrusted {
+                MediaKeys.post(command.key)
+            } else if command == .toggle {
+                browser.togglePlayback(in: kind)
+            } else {
+                requestControlAccess()
             }
-            scheduleRefresh()
+        case nil:
+            if MediaKeys.isTrusted {
+                MediaKeys.post(command.key)
+            } else {
+                mediaRemote?.send(command.remote)
+                if externalPlayer != nil { requestControlAccess() }
+            }
         }
+        scheduleRefresh()
     }
 
     private func scheduleRefresh() {
         Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: .milliseconds(400))
             self?.refreshAll()
         }
     }
 
     // MARK: - Refresh
 
-    private var runningPlayers: [PlayerSource] {
-        [PlayerSource.spotify, .music].filter { isRunning($0) }
-    }
-
-    private func isRunning(_ player: PlayerSource) -> Bool {
-        guard let id = player.bundleID else { return false }
-        return !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty
+    private func isRunning(_ bundleID: String) -> Bool {
+        !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
     private func refreshAll() {
-        let running = runningPlayers
-        for player in running { refresh(player) }
-        if running.isEmpty { refreshSystem() }
+        for player in [PlayerSource.spotify, .music] where isRunning(player.bundleID) {
+            refresh(player)
+        }
+        pollBrowsers()
     }
 
     private func periodicRefresh() {
-        if let source, source != .system {
-            if isRunning(source) { refresh(source) } else { clear() }
-        } else {
-            refreshAll()
+        guard !SystemState.screensAsleep else { return }
+        let trusted = MediaKeys.isTrusted
+        if trusted != canControlAnyPlayer { canControlAnyPlayer = trusted }
+
+        switch source {
+        case .music?, .spotify?:
+            guard let source else { return }
+            if !isRunning(source.bundleID) {
+                clear()
+                refreshAll()
+            } else if isPlaying {
+                refresh(source)  // синхронизируем позицию
+            } else {
+                pollBrowsers()   // вдруг музыка заиграла в браузере
+            }
+        case .browser?:
+            pollBrowsers()
+        case nil:
+            // Без активного плеера не опрашиваем часто: Музыка и Spotify сами присылают уведомления.
+            pollBrowsers()
         }
     }
 
     private func refresh(_ player: PlayerSource) {
-        // Никогда не запускаем плеер сами: AppleScript «tell application» его бы открыл.
-        guard isRunning(player) else {
+        // Никогда не запускаем плеер сами: «tell application» открыл бы его.
+        guard isRunning(player.bundleID) else {
             if source == player { clear() }
             return
         }
@@ -203,19 +279,44 @@ final class NowPlayingService {
         }
     }
 
-    private func refreshSystem() {
-        guard let mediaRemote else { return }
-        if let source, source != .system, isPlaying { return }
-        mediaRemote.fetchInfo { [weak self] info in
-            Task { @MainActor in self?.applySystem(info) }
+    private func pollBrowsers() {
+        guard Pref.bool(Pref.browserMusic) else {
+            if case .browser? = source { clear() }
+            return
         }
+        let running = BrowserKind.allCases.filter { isRunning($0.bundleID) }
+        guard !running.isEmpty else {
+            if case .browser? = source { clear() }
+            return
+        }
+        browser.fetch(from: running) { [weak self] result in
+            self?.applyBrowser(result)
+        }
+    }
+
+    private func applyBrowser(_ result: BrowserFetchResult) {
+        if result.needsSetup != browserNeedsSetup { browserNeedsSetup = result.needsSetup }
+        guard let media = result.media, let kind = result.kind else {
+            if case .browser? = source { clear() }
+            return
+        }
+        let snapshot = PlayerSnapshot(
+            state: media.playing ? "playing" : "paused",
+            title: media.title,
+            artist: media.artist,
+            album: media.album,
+            duration: media.duration,
+            position: media.position,
+            artworkURL: media.artwork.isEmpty ? nil : media.artwork
+        )
+        apply(snapshot, from: .browser(kind))
     }
 
     private func apply(_ snapshot: PlayerSnapshot?, from player: PlayerSource) {
         guard let snapshot else { return }
         let playing = snapshot.state == "playing"
 
-        // Не даём поставленному на паузу плееру перебить тот, что сейчас играет.
+        // Не даём плееру на паузе перебить тот, что сейчас играет.
         if let source, source != player, isPlaying, !playing { return }
 
         if snapshot.state == "stopped" || snapshot.title.isEmpty {
@@ -223,73 +324,98 @@ final class NowPlayingService {
             return
         }
 
-        source = player
-        isPlaying = playing
+        if source != player {
+            source = player
+            let info = appInfo(for: player.bundleID)
+            sourceName = info.name
+            sourceIcon = info.icon
+        }
+        if isPlaying != playing { isPlaying = playing }
+
         let newTrack = NowPlayingTrack(
             title: snapshot.title,
             artist: snapshot.artist,
             album: snapshot.album,
             duration: snapshot.duration
         )
-        if track != newTrack { track = newTrack }
+        if track != newTrack {
+            let titleChanged = track?.title != newTrack.title || track?.artist != newTrack.artist
+            track = newTrack
+            if titleChanged, playing, Date().timeIntervalSince(launchDate) > 3 {
+                onTrackChange?(newTrack)
+            }
+        }
         elapsed = snapshot.position
         elapsedTimestamp = Date()
 
-        let key = "\(player.rawValue)|\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
+        let key = "\(player.bundleID)|\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
         if key != artworkKey {
             artworkKey = key
             loadArtwork(for: player, url: snapshot.artworkURL, key: key)
         }
     }
 
-    private func applySystem(_ info: MediaRemote.Info?) {
-        if let source, source != .system, isPlaying { return }
-        guard let info else {
-            if source == .system { clear() }
-            return
-        }
-        source = .system
-        isPlaying = info.isPlaying
-        let newTrack = NowPlayingTrack(title: info.title, artist: info.artist, album: info.album, duration: info.duration)
-        if track != newTrack { track = newTrack }
-        elapsed = info.elapsed
-        elapsedTimestamp = info.timestamp
-        let key = "system|\(info.title)|\(info.artist)"
-        if key != artworkKey {
-            artworkKey = key
-            setArtwork(info.artwork.flatMap { NSImage(data: $0) })
-        }
-    }
-
     private func appTerminated(_ bundleID: String?) {
+        refreshExternalPlayer()
         guard let bundleID, bundleID == source?.bundleID else { return }
         clear()
         refreshAll()
     }
 
     private func clear() {
+        guard source != nil || track != nil else { return }
         track = nil
         isPlaying = false
         source = nil
+        sourceName = ""
+        sourceIcon = nil
         artworkKey = nil
         setArtwork(nil)
+    }
+
+    /// Ищем запущенные плееры, которые не сообщают трек (Яндекс Музыка и т. п.).
+    private func refreshExternalPlayer() {
+        let app = NSWorkspace.shared.runningApplications.first { app in
+            let id = app.bundleIdentifier?.lowercased() ?? ""
+            let name = app.localizedName?.lowercased() ?? ""
+            return (id.contains("yandex") && id.contains("music"))
+                || name.contains("яндекс музыка")
+                || name.contains("yandex music")
+        }
+        let player = app.map {
+            ExternalPlayer(name: $0.localizedName ?? "Яндекс Музыка", bundleID: $0.bundleIdentifier ?? "", icon: $0.icon)
+        }
+        if player != externalPlayer { externalPlayer = player }
+    }
+
+    private func appInfo(for bundleID: String) -> (name: String, icon: NSImage?) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return ("", nil) }
+        let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+        if let cached = iconCache[bundleID] { return (name, cached) }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        iconCache[bundleID] = icon
+        return (name, icon)
     }
 
     // MARK: - Artwork
 
     private func loadArtwork(for player: PlayerSource, url: String?, key: String) {
         switch player {
-        case .spotify:
-            guard let url, let link = URL(string: url) else { setArtwork(nil); return }
+        case .spotify, .browser:
+            guard let url, let link = URL(string: url), link.scheme?.hasPrefix("http") == true else {
+                setArtwork(nil)
+                return
+            }
             URLSession.shared.dataTask(with: link) { data, _, _ in
+                let image = data.flatMap { NSImage(data: $0) }
                 Task { @MainActor [weak self] in
                     guard let self, self.artworkKey == key else { return }
-                    self.setArtwork(data.flatMap { NSImage(data: $0) })
+                    self.setArtwork(image)
                 }
             }.resume()
         case .music:
             let script = """
-            tell application "Music"
+            tell application id "com.apple.Music"
                 try
                     return raw data of artwork 1 of current track
                 on error
@@ -301,14 +427,14 @@ final class NowPlayingService {
                 guard let self, self.artworkKey == key else { return }
                 self.setArtwork(data.flatMap { NSImage(data: $0) })
             }
-        case .system:
-            break
         }
     }
 
     private func setArtwork(_ image: NSImage?) {
         artwork = image
-        accent = image?.vibrantAverageColor.map { Color(nsColor: $0) } ?? .white
+        let color = image?.vibrantAverageColor ?? .white
+        accentNSColor = color
+        accent = Color(nsColor: color)
     }
 
     // MARK: - Scripts
@@ -317,7 +443,7 @@ final class NowPlayingService {
         switch player {
         case .music:
             return """
-            tell application "Music"
+            tell application id "com.apple.Music"
                 if player state is stopped then return {"stopped"}
                 set t to current track
                 return {(player state as string), (name of t), (artist of t), (album of t), (duration of t), (player position)}
@@ -325,13 +451,13 @@ final class NowPlayingService {
             """
         case .spotify:
             return """
-            tell application "Spotify"
+            tell application id "com.spotify.client"
                 if player state is stopped then return {"stopped"}
                 set t to current track
                 return {(player state as string), (name of t), (artist of t), (album of t), ((duration of t) / 1000), (player position), (artwork url of t)}
             end tell
             """
-        case .system:
+        case .browser:
             return ""
         }
     }

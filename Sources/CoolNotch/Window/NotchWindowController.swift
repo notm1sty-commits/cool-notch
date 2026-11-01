@@ -72,7 +72,12 @@ final class NotchWindowController {
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .leftMouseDown, .leftMouseUp, .rightMouseDown]
         if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] event in
             let type = event.type
-            Task { @MainActor in self?.handle(type, local: false) }
+            // Монитор вызывается на главном потоке — обходимся без лишних Task на каждое движение мыши.
+            if Thread.isMainThread {
+                MainActor.assumeIsolated { self?.handle(type, local: false) }
+            } else {
+                Task { @MainActor in self?.handle(type, local: false) }
+            }
         }) {
             monitors.append(global)
         }
@@ -98,14 +103,12 @@ final class NotchWindowController {
         case .leftMouseUp:
             mouseIsDown = false
             isFileDragging = false
-            viewModel.isFileDragActive = false
         case .leftMouseDragged:
             let pasteboard = NSPasteboard(name: .drag)
             if !isFileDragging,
                pasteboard.changeCount != dragStartChangeCount,
                pasteboard.types?.contains(.fileURL) == true {
                 isFileDragging = true
-                viewModel.isFileDragActive = true
             }
         default:
             break
@@ -117,7 +120,7 @@ final class NotchWindowController {
         guard let panel else { return }
         let point = NSEvent.mouseLocation
         let inside = viewModel.hoverZone.contains(point)
-        panel.ignoresMouseEvents = !inside
+        if panel.ignoresMouseEvents == inside { panel.ignoresMouseEvents = !inside }
 
         if inside {
             // Когда тянут окно или выделяют что-то — не мешаем. Файлы — открываем полку.
@@ -132,13 +135,11 @@ final class NotchWindowController {
 
     /// Пока чёлка открыта, дополнительно опрашиваем мышь — надёжно ловим уход курсора.
     private func updatePolling() {
-        if viewModel.isOpen || viewModel.isPointerInside {
+        if viewModel.isOpen || viewModel.isHovering {
             guard pollTimer == nil else { return }
-            let timer = Timer(timeInterval: 1.0 / 12.0, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.updateHover() }
+            pollTimer = Timer.coalesced(interval: 1.0 / 12.0, tolerance: 0.2) { [weak self] in
+                self?.updateHover()
             }
-            RunLoop.main.add(timer, forMode: .common)
-            pollTimer = timer
         } else {
             pollTimer?.invalidate()
             pollTimer = nil

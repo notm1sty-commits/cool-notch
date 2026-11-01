@@ -29,7 +29,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Cool Notch показывает, что играет в Spotify и Музыке, и позволяет переключать треки прямо из чёлки.</string>
+	<string>Cool Notch показывает, что играет в Spotify, Музыке и в браузере (Яндекс Музыка, YouTube), и позволяет управлять воспроизведением прямо из чёлки.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© notm1sty</string>
 </dict>

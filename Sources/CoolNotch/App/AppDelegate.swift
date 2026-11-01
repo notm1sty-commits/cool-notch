@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Pref.registerDefaults()
+        SystemState.start()
 
         let viewModel = NotchViewModel()
         viewModel.openSettings = { [weak self] in self?.showSettings() }
