@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct ShelfView: View {
     @Environment(NotchViewModel.self) var vm
+    @State private var hovering = false
 
     var body: some View {
         let shelf = vm.shelf
@@ -12,7 +13,9 @@ struct ShelfView: View {
 
             ZStack {
                 if shelf.items.isEmpty {
-                    DropHint(active: vm.isDropTargeted)
+                    DropHint(active: vm.isDropTargeted, hovering: hovering)
+                        .contentShape(Rectangle())
+                        .onTapGesture { vm.pickFilesForShelf() }
                         .transition(.opacity)
                 } else {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -21,6 +24,9 @@ struct ShelfView: View {
                                 ShelfItemTile(item: item, shelf: shelf)
                                     .transition(RevealTransition(scale: 0.8, offset: .zero))
                             }
+                            AddFilesTile { vm.pickFilesForShelf() }
+                                .opacity(hovering ? 1 : 0)
+                                .animation(Theme.micro, value: hovering)
                         }
                         .padding(.horizontal, 8)
                         .frame(maxHeight: .infinity)
@@ -35,7 +41,8 @@ struct ShelfView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .glass(Theme.cardRadius, highlighted: vm.isDropTargeted)
+            .glass(Theme.cardRadius, highlighted: vm.isDropTargeted || hovering)
+            .onHover { inside in withAnimation(Theme.micro) { hovering = inside } }
             .animation(Theme.content, value: shelf.items)
             .animation(Theme.micro, value: vm.isDropTargeted)
         }
@@ -45,27 +52,58 @@ struct ShelfView: View {
 
 private struct DropHint: View {
     var active: Bool
+    var hovering = false
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .strokeBorder(
-                    Color.white.opacity(active ? 0.5 : 0.14),
+                    Color.white.opacity(active ? 0.5 : (hovering ? 0.28 : 0.14)),
                     style: StrokeStyle(lineWidth: 1, dash: [5, 5])
                 )
             PlaceholderView(
-                title: active ? "Отпускай" : "Перетащи файлы на чёлку",
-                subtitle: "Они подождут здесь, пока не понадобятся",
-                fill: .white.opacity(active ? 0.16 : 0.08)
+                title: active ? "Отпускай" : (hovering ? "Нажми, чтобы выбрать файлы" : "Перетащи файлы на чёлку"),
+                subtitle: hovering && !active ? "или перетащи их сюда — подождут, пока не понадобятся" : "Они подождут здесь, пока не понадобятся",
+                fill: .white.opacity(active || hovering ? 0.16 : 0.08)
             ) {
-                Image(systemName: active ? "tray.and.arrow.down.fill" : "tray")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.white.opacity(active ? 1 : 0.62))
+                Image(systemName: active ? "tray.and.arrow.down.fill" : (hovering ? "plus" : "tray"))
+                    .font(.system(size: 16, weight: hovering && !active ? .semibold : .medium))
+                    .foregroundStyle(.white.opacity(active || hovering ? 1 : 0.62))
                     .contentTransition(.symbolEffect(.replace))
             }
         }
         .scaleEffect(active ? 1.02 : 1)
         .animation(Theme.hover, value: active)
+        .animation(Theme.micro, value: hovering)
+    }
+}
+
+/// Плитка «Добавить» в конце полки: выбрать файлы через окно Finder.
+private struct AddFilesTile: View {
+    var action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.white.opacity(hovering ? 0.45 : 0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .frame(width: 50, height: 50)
+                    .overlay(
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white.opacity(hovering ? 1 : 0.7))
+                    )
+                Text("Добавить")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Theme.secondaryText)
+                    .frame(width: 76, height: 26, alignment: .top)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableButtonStyle(scale: 0.92))
+        .onHover { hovering = $0 }
+        .help("Выбрать файлы для полки")
     }
 }
 

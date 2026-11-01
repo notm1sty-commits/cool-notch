@@ -280,6 +280,24 @@ final class NotchViewModel {
 
     // MARK: Media deck
 
+    /// «+» на полке: выбрать файлы в окне Finder, они лягут на полку (оттуда их можно перетащить куда угодно).
+    func pickFilesForShelf() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.prompt = "Добавить на полку"
+        panel.message = "Выбери файлы — они подождут на полке в чёлке"
+        NSApp.activate()
+        panel.begin { [weak self] response in
+            guard let self, response == .OK, !panel.urls.isEmpty else { return }
+            withAnimation(Theme.content) { self.shelf.add(panel.urls) }
+            // Показываем полку с новыми файлами; клик мимо чёлки её закроет.
+            self.select(.shelf)
+            self.open(pinned: true)
+        }
+    }
+
     /// Свайп по чёлке: следующая или предыдущая карточка плеера.
     func swipeDeck(next: Bool) {
         let target = deckIndex + (next ? 1 : -1)
