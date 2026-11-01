@@ -11,12 +11,6 @@ struct ShelfView: View {
             AirDropZone()
                 .frame(width: 128)
 
-            // Без плашек, как у таймера: тонкий разделитель между AirDrop и полкой.
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 1)
-                .padding(.vertical, 14)
-
             ZStack {
                 if shelf.items.isEmpty {
                     DropHint(active: vm.isDropTargeted, hovering: hovering)
@@ -143,10 +137,7 @@ private struct AirDropZone: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                .fill(Color(red: 0.35, green: 0.68, blue: 1).opacity(targeted ? 0.12 : 0))
-        )
+        .glass(Theme.cardRadius, highlighted: targeted || hovering, tint: targeted ? Color(red: 0.35, green: 0.68, blue: 1) : .white, soft: true)
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         .onTapGesture { vm.pickFilesForAirDrop() }
         .onHover { hovering = $0 }

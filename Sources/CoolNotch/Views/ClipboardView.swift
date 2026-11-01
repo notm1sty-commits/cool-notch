@@ -20,8 +20,31 @@ struct ClipboardView: View {
             }
             list(clipboard)
         }
+        .overlay { emptyState(clipboard) }
         .animation(Theme.content, value: clipboard.screenshotAccess)
         .onChange(of: clipboard.entries.isEmpty) { _, empty in if empty { editing = false } }
+    }
+
+    /// Пустое состояние — по центру всей панели, на той же высоте, что на полке и в заметках.
+    @ViewBuilder
+    private func emptyState(_ clipboard: ClipboardService) -> some View {
+        if !clipboard.isEnabled {
+            PlaceholderView(
+                icon: "doc.on.clipboard",
+                title: "История буфера выключена",
+                subtitle: "Включить можно в настройках",
+                layout: .horizontal
+            )
+            .allowsHitTesting(false)
+        } else if clipboard.entries.isEmpty {
+            PlaceholderView(
+                icon: "doc.on.clipboard",
+                title: "Скопируй текст или сделай скриншот",
+                subtitle: "Они появятся здесь. Пароли не сохраняются.",
+                layout: .horizontal
+            )
+            .allowsHitTesting(false)
+        }
     }
 
     /// «Проверить» — перечитать буфер и скриншоты сразу; «Изменить» — удалять лишнее.
@@ -85,22 +108,8 @@ struct ClipboardView: View {
     @ViewBuilder
     private func list(_ clipboard: ClipboardService) -> some View {
         ZStack {
-            if !clipboard.isEnabled {
-                PlaceholderView(
-                    icon: "doc.on.clipboard",
-                    title: "История буфера выключена",
-                    subtitle: "Включить можно в настройках",
-                    layout: .horizontal
-                )
-            } else if clipboard.entries.isEmpty {
-                PlaceholderView(
-                    icon: "doc.on.clipboard",
-                    title: "Скопируй текст или сделай скриншот",
-                    subtitle: "Они появятся здесь. Пароли не сохраняются.",
-                    layout: .horizontal
-                )
-                // Строка с кнопками сверху «тянет» вниз — поднимаем, чтобы стояло по центру панели.
-                .padding(.bottom, 30)
+            if !clipboard.isEnabled || clipboard.entries.isEmpty {
+                Color.clear
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVGrid(columns: columns, spacing: 6) {

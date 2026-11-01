@@ -230,7 +230,7 @@ struct BannerView: View {
 
     /// У значков приложений есть прозрачные поля, поэтому рамка чуть больше высоты текста —
     /// тогда сам значок визуально совпадает с блоком «приложение · заголовок · текст».
-    private var appIconSize: CGFloat { banner.source != nil ? 58 : 50 }
+    private var appIconSize: CGFloat { banner.source != nil ? 62 : 54 }
 
     @ViewBuilder
     private var icon: some View {
@@ -244,6 +244,9 @@ struct BannerView: View {
                     .resizable()
                     .interpolation(.high)
                     .frame(width: appIconSize, height: appIconSize)
+                    // У иконок macOS ~9 % прозрачных полей с каждой стороны — убираем их из раскладки,
+                    // тогда отступ слева от видимой иконки равен отступу справа от текста.
+                    .padding(-appIconSize * 0.09)
                     .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
             } else {
                 Image(systemName: "app.badge.fill")
@@ -251,6 +254,9 @@ struct BannerView: View {
                     .frame(width: 42, height: 42)
                     .glass(11)
             }
+        case .sleepyBattery(let level):
+            SleepyBattery(level: level)
+                .frame(width: 50, height: 50)
         case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 17, weight: .semibold))
@@ -447,5 +453,60 @@ private struct BannerHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Сонная батарейка: почти пустая, глаза закрыты, над ней всплывают «z». Для заряда ≤ 10 %.
+struct SleepyBattery: View {
+    var level: Int
+
+    var body: some View {
+        ZStack {
+            Circle().fill(Color.white.opacity(0.08))
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.9), lineWidth: 1.8)
+                    .frame(width: 32, height: 21)
+                Capsule()
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: 2.5, height: 7)
+                    .offset(x: 17.5)
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(Color(red: 1, green: 0.27, blue: 0.23))
+                    .frame(width: max(3, 26 * CGFloat(level) / 100), height: 15)
+                    .frame(width: 26, alignment: .leading)
+                // Лицо: закрытые глаза-дуги и маленький «о»-ротик.
+                HStack(spacing: 7) {
+                    SleepyEye()
+                    SleepyEye()
+                }
+                .offset(y: -1.5)
+                Ellipse()
+                    .stroke(Color.white.opacity(0.9), lineWidth: 1.2)
+                    .frame(width: 3, height: 3.5)
+                    .offset(y: 4.5)
+            }
+            .phaseAnimator([false, true]) { view, breathing in
+                view.scaleEffect(breathing ? 1.04 : 1)
+            } animation: { _ in .easeInOut(duration: 1.6) }
+
+            Text("z")
+                .font(.system(size: 9, weight: .heavy, design: .rounded))
+                .foregroundStyle(.white.opacity(0.8))
+                .phaseAnimator([false, true]) { view, up in
+                    view.offset(x: up ? 17 : 12, y: up ? -18 : -10).opacity(up ? 0 : 1)
+                } animation: { up in up ? .easeOut(duration: 1.4) : .linear(duration: 0.01) }
+        }
+    }
+}
+
+private struct SleepyEye: View {
+    var body: some View {
+        Path { path in
+            // Нижняя дуга (‿) — закрытый сонный глаз.
+            path.addRelativeArc(center: CGPoint(x: 2.5, y: 0.5), radius: 2.5, startAngle: .degrees(20), delta: .degrees(140))
+        }
+        .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
+        .frame(width: 5, height: 3)
     }
 }

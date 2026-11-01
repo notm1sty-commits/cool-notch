@@ -17,6 +17,8 @@ struct NotchBanner: Identifiable, Equatable {
         case artwork
         /// Иконка приложения по bundle id.
         case app(String)
+        /// Сонная батарейка-персонаж для очень низкого заряда.
+        case sleepyBattery(Int)
     }
 
     enum Action: Equatable {
@@ -176,13 +178,7 @@ final class NotchViewModel {
         }
         battery.onLowBattery = { [weak self] in
             guard let self, Pref.bool(Pref.showLowBattery) else { return }
-            self.post(NotchBanner(
-                icon: .symbol("battery.25percent"),
-                tint: .red,
-                title: "Низкий заряд",
-                subtitle: "Осталось \(self.battery.level)% — пора на зарядку",
-                duration: 5
-            ))
+            self.showLowBattery(level: self.battery.level)
         }
         timer.onFinish = { [weak self] minutes in
             self?.post(NotchBanner(
@@ -277,6 +273,27 @@ final class NotchViewModel {
 
 
     // MARK: Media deck
+
+    /// Низкий (до 20 %) и очень низкий (до 10 %) заряд — разные всплывашки, обе с процентом.
+    func showLowBattery(level: Int) {
+        if level <= 10 {
+            post(NotchBanner(
+                icon: .sleepyBattery(level),
+                tint: .red,
+                title: "Почти разрядился · \(level)%",
+                subtitle: "Подключи зарядку, а то я усну",
+                duration: 6
+            ))
+        } else {
+            post(NotchBanner(
+                icon: .symbol("battery.25percent"),
+                tint: Color(red: 1, green: 0.62, blue: 0.04),
+                title: "Низкий заряд · \(level)%",
+                subtitle: "Самое время подключить зарядку",
+                duration: 5
+            ))
+        }
+    }
 
     /// «+» на полке: выбрать файлы в окне Finder, они лягут на полку (оттуда их можно перетащить куда угодно).
     func pickFilesForShelf() {

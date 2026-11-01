@@ -39,23 +39,27 @@ struct NotesView: View {
             .frame(height: 24)
 
             ZStack {
-                if store.notes.isEmpty {
-                    PlaceholderView(
-                        icon: "note.text",
-                        title: "Пока пусто",
-                        subtitle: "Напиши заметку внизу и нажми ↑ или Enter",
-                        layout: .horizontal
-                    )
-                    // Поле ввода снизу визуально «тянет» вниз — поднимаем, чтобы выглядело по центру.
-                    .padding(.bottom, 16)
-                    .transition(.opacity)
-                } else {
+                if !store.notes.isEmpty {
                     list(store: store)
                 }
             }
             .frame(maxHeight: .infinity)
 
             composer(store: store)
+        }
+        // Пустое состояние — по центру всей панели, на той же высоте, что на полке и в буфере,
+        // чтобы при перелистывании разделов глаз не прыгал.
+        .overlay {
+            if store.notes.isEmpty {
+                PlaceholderView(
+                    icon: "note.text",
+                    title: "Пока пусто",
+                    subtitle: "Напиши заметку внизу и нажми ↑ или Enter",
+                    layout: .horizontal
+                )
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
         }
         .animation(Theme.content, value: store.notes)
         .onChange(of: editing) { _, _ in dragging = nil }

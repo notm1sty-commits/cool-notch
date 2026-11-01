@@ -24,10 +24,11 @@ final class Showcase {
         isRunning = true
         task = Task { [weak self] in
             while !Task.isCancelled {
+                guard let self else { return }
                 do {
-                    try await self?.playOnce()
+                    try await self.playOnce()
                 } catch {
-                    break
+                    return
                 }
             }
         }
@@ -42,6 +43,7 @@ final class Showcase {
         vm.demoHover(false)
         vm.dismissBanner()
         vm.close()
+        vm.select(.home)
         vm.nowPlaying.endDemo()
     }
 
@@ -49,18 +51,33 @@ final class Showcase {
         try await Task.sleep(for: .seconds(seconds))
     }
 
+    private static func media(_ music: (title: String, artist: String, art: String)) -> [DemoMedia] {
+        let image = DemoDirector.image
+        return [
+            DemoMedia(source: .music, title: music.title, subtitle: music.artist, artwork: image(music.art), duration: 187, elapsed: 41, playing: true, url: nil),
+            DemoMedia(source: .browser(.chrome), title: "Как приготовить идеальный эспрессо", subtitle: "Coffee Lab", artwork: image("v1"), duration: 642, elapsed: 252, playing: false, url: "https://www.youtube.com/watch?v=coolnotch"),
+            DemoMedia(source: .spotify, title: "Ночной город", subtitle: "Neon Drive", artwork: image("c2"), duration: 214, elapsed: 96, playing: false, url: nil),
+        ]
+    }
+
+    /// Один круг. Порядок — как ими пользуются: музыка, уведомление, раскрытая чёлка и свайпы,
+    /// устройства и батарея.
     private func playOnce() async throws {
         guard let vm else { return }
-        let image = DemoDirector.image
 
-        step = "Смена трека"
-        vm.nowPlaying.showDemo([
-            DemoMedia(source: .music, title: "Летний дождь", subtitle: "Aurora Lane — Seasons", artwork: image("c1"), duration: 187, elapsed: 41, playing: true, url: nil),
-            DemoMedia(source: .browser(.chrome), title: "Как приготовить идеальный эспрессо", subtitle: "Coffee Lab", artwork: image("v1"), duration: 642, elapsed: 252, playing: false, url: "https://www.youtube.com/watch?v=coolnotch"),
-            DemoMedia(source: .spotify, title: "Ночной город", subtitle: "Neon Drive — Afterglow", artwork: image("c2"), duration: 214, elapsed: 96, playing: false, url: nil),
-        ])
-        try await wait(3.6)
+        // 1. Заиграл трек — «Сейчас играет · Музыка», эквалайзер цвета обложки.
+        step = "Сейчас играет"
+        vm.nowPlaying.showDemo(Self.media(("Летний дождь", "Aurora Lane", "c1")))
+        try await wait(2.2)
 
+        // 2. Треки быстро листают — всплывашка одна, просто обновляется.
+        step = "Быстрое переключение треков"
+        vm.nowPlaying.showDemo(Self.media(("Северное сияние", "Polar Echo", "c3")))
+        try await wait(0.45)
+        vm.nowPlaying.showDemo(Self.media(("Тёплый вечер", "Aurora Lane", "c1")))
+        try await wait(4.4)
+
+        // 3. Уведомление: «Сообщения · сейчас», ширина по тексту.
         step = "Уведомление"
         vm.post(NotchBanner(
             icon: .app("com.apple.MobileSMS"),
@@ -69,50 +86,48 @@ final class Showcase {
             subtitle: "Это тест анимаций Cool Notch ✨",
             duration: 3.4,
             action: .openNotch,
-            expanded: true,
             source: "Сообщения"
         ))
-        try await wait(4.4)
+        try await wait(4.2)
 
+        // 4. Раскрытие и сквозной свайп: карточки плеера, затем разделы.
         step = "Раскрытие"
         vm.demoHover(true)
-        try await wait(0.5)
+        try await wait(0.4)
         vm.open(pinned: true)
-        try await wait(1.8)
+        try await wait(1.6)
 
-        step = "Карусель плеера"
-        for index in [1, 2, 0] {
-            vm.selectDeck(index)
-            try await wait(1.5)
+        step = "Свайп по плееру и разделам"
+        for _ in 0..<5 {
+            vm.swipe(next: true)
+            try await wait(1.2)
         }
-
-        step = "Вкладки"
-        for tab in [NotchTab.shelf, .clipboard, .notes, .home] {
-            withAnimation(Theme.content) { vm.select(tab) }
-            try await wait(1.4)
+        for _ in 0..<5 {
+            vm.swipe(next: false)
+            try await wait(0.7)
         }
+        try await wait(0.6)
 
         step = "Сворачивание"
         vm.demoHover(false)
         vm.close()
         try await wait(1.6)
 
-        step = "AirPods"
+        // 5. Устройства и батарея.
+        step = "Наушники"
         vm.showAirPods(name: "AirPods Pro", levels: AirPodsLevels(left: 92, right: 88, caseLevel: 34, single: nil))
-        try await wait(5)
+        try await wait(5.4)
 
         step = "Зарядка"
         vm.flashCharging()
-        try await wait(3.6)
+        try await wait(3.8)
 
         step = "Низкий заряд"
-        vm.post(NotchBanner(
-            icon: .symbol("battery.25percent"),
-            tint: .red,
-            title: "Низкий заряд",
-            subtitle: "Это тест — с батареей всё в порядке",
-            duration: 3
-        ))
-        try await wait(4)
+        vm.showLowBattery(level: 20)
+        try await wait(5.6)
+
+        step = "Почти разрядился"
+        vm.showLowBattery(level: 8)
+        try await wait(6.6)
     }
 }

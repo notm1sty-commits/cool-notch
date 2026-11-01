@@ -184,16 +184,19 @@ struct SettingsView: View {
                 Button {
                     withAnimation(.snappy(duration: 0.2)) { page = item }
                 } label: {
-                    VStack(spacing: 4) {
+                    // Значок в рамке фиксированного размера, подпись — на одной линии у всех вкладок.
+                    VStack(spacing: 5) {
                         Image(systemName: item.icon)
                             .font(.system(size: 15, weight: .medium))
-                            .frame(height: 18)
+                            .frame(width: 24, height: 20)
                         Text(item.title)
                             .font(.system(size: 10.5, weight: .medium))
                             .lineLimit(1)
+                            .frame(height: 13)
                     }
+                    .padding(.top, 7)
                     .foregroundStyle(page == item ? Color.white : Color.white.opacity(0.55))
-                    .frame(width: 78, height: 50)
+                    .frame(width: 78, height: 50, alignment: .top)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color.white.opacity(page == item ? 0.12 : 0))
@@ -441,7 +444,7 @@ private struct ShowcaseSection: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(showcase.isRunning ? "Показываю: \(showcase.step)" : "Показать все анимации по очереди")
                         .fontWeight(.medium)
-                    Text("Смена трека, уведомление, раскрытие, карусель, вкладки, AirPods, зарядка. Идёт по кругу, пока не нажмёшь «Стоп». Твои заметки, полка и история не меняются.")
+                    Text("«Сейчас играет» и быстрое переключение треков, уведомление, раскрытие и свайп по плееру и разделам, наушники, зарядка, низкий и почти нулевой заряд. Идёт по кругу, пока не нажмёшь «Стоп». Твои заметки, полка и история не меняются.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
