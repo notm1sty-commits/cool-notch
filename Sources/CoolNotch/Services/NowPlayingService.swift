@@ -169,6 +169,8 @@ final class NowPlayingService {
     private(set) var browserNeedsSetup = false
     /// Все источники для карусели: сначала играющее (последнее запущенное), затем стоящее на паузе.
     private(set) var items: [MediaItem] = []
+    /// Что сейчас видит системный «Что играет» — для строки диагностики в настройках.
+    private(set) var systemStatus = "Ждём данные…"
 
     @ObservationIgnored var onTrackChange: (@MainActor (NowPlayingTrack) -> Void)?
     /// Вкладкой браузера нельзя управлять напрямую: выключен «JavaScript из Apple Events».
@@ -834,10 +836,17 @@ final class NowPlayingService {
         let systemSources = candidates.keys.filter { if case .system = $0 { return true } else { return false } }
         switch event {
         case .ready:
-            break
+            systemStatus = "Помощник запущен, ждём трек…"
         case .stopped:
+            systemStatus = "Помощник остановлен"
             systemSources.forEach(removeCandidate)
         case .info(let info):
+            if info.isEmpty {
+                systemStatus = "Сейчас ничего не играет"
+            } else {
+                let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid)?.localizedName : nil
+                systemStatus = "\(app ?? "Плеер"): \(info.title)\(info.isPlaying ? "" : " (пауза)")"
+            }
             guard !info.isEmpty else {
                 // Источник закрылся (вкладка, плеер) — убираем только живой, запомненные оставляем.
                 systemSources.filter { candidates[$0]?.isLive != false }.forEach(removeCandidate)

@@ -5,6 +5,7 @@ import SwiftUI
 struct SettingsView: View {
     var notifications: NotificationMirror?
     var updates: UpdateService?
+    var nowPlaying: NowPlayingService?
 
     @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
@@ -91,6 +92,15 @@ struct SettingsView: View {
 
             Section("Музыка") {
                 Toggle("Любой плеер через системный «Что играет»", isOn: $systemNowPlaying)
+                if systemNowPlaying, let nowPlaying {
+                    LabeledContent("Сейчас видит") {
+                        Text(nowPlaying.systemStatus)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption)
+                }
                 Text("Показывает трек из любого приложения — Яндекс Музыки, браузера, Spotify. Работает через небольшой помощник, который запускается в системном perl: так macOS отдаёт эти данные. Если что-то не так — выключи, и чёлка вернётся к Spotify, Музыке и браузеру.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

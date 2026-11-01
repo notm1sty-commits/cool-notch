@@ -31,7 +31,9 @@ static MRSetElapsedTimeFn gSetElapsed = NULL;
 
 static NSString *gLastArtworkKey = nil;
 static BOOL gRefreshScheduled = NO;
-static unsigned long gGeneration = 0;
+static BOOL gRefreshInFlight = NO;
+static BOOL gRefreshPending = NO;
+static CFAbsoluteTime gRefreshStarted = 0;
 static NSMutableData *gInputBuffer = nil;
 
 static void emitJSON(NSDictionary *payload) {
@@ -98,17 +100,24 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
 }
 
 static void scheduleRefresh(void);
+static void refreshNow(void);
+
+/// Запросы идут строго по одному: пока один не ответил, новые события только помечают
+/// «нужно ещё раз». Раньше более свежий запрос отменял текущий, и плееры, которые
+/// обновляют позицию очень часто (приложение Яндекс Музыки), не успевали показаться вовсе.
+static void finishRefresh(void) {
+    gRefreshInFlight = NO;
+    if (gRefreshPending) {
+        gRefreshPending = NO;
+        refreshNow();
+    }
+}
 
 /// Название трека, «играет ли» и PID приложения MediaRemote отдаёт разными вызовами.
 /// Если между ними система переключилась на другой плеер (видео ↔ музыка), данные
-/// перемешивались, и карточки в чёлке начинали мигать. Поэтому: PID до и после,
-/// и только самый свежий запрос имеет право что-то отправить.
-static void refreshNow(void) {
-    if (gGetInfo == NULL) {
-        emitJSON(@{ @"type": @"info", @"empty": @YES });
-        return;
-    }
-    unsigned long generation = ++gGeneration;
+/// перемешивались, и карточки мигали. Поэтому сверяем PID до и после и при расхождении
+/// спрашиваем заново (не больше двух раз — дальше отдаём то, что есть).
+static void performRefresh(int attempt) {
     dispatch_queue_t queue = dispatch_get_main_queue();
 
     void (^readPID)(void (^)(int)) = ^(void (^done)(int)) {
@@ -120,23 +129,18 @@ static void refreshNow(void) {
     };
 
     readPID(^(int pidBefore) {
-        if (generation != gGeneration) {
-            return;
-        }
         gGetInfo(queue, ^(CFDictionaryRef rawInfo) {
             NSDictionary *info = rawInfo != NULL ? [(__bridge NSDictionary *)rawInfo copy] : @{};
             double rate = doubleValue(info[@"kMRMediaRemoteNowPlayingInfoPlaybackRate"]);
 
             void (^finish)(BOOL) = ^(BOOL playing) {
                 readPID(^(int pidAfter) {
-                    if (generation != gGeneration) {
-                        return;  // уже идёт более свежий запрос
-                    }
-                    if (pidAfter != pidBefore) {
-                        scheduleRefresh();  // плеер сменился посередине — спросим ещё раз
+                    if (pidAfter != pidBefore && attempt < 2) {
+                        performRefresh(attempt + 1);
                         return;
                     }
                     emitInfo(info, playing, pidAfter);
+                    finishRefresh();
                 });
             };
 
@@ -149,6 +153,22 @@ static void refreshNow(void) {
             }
         });
     });
+}
+
+static void refreshNow(void) {
+    if (gGetInfo == NULL) {
+        emitJSON(@{ @"type": @"info", @"empty": @YES });
+        return;
+    }
+    CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+    // Если MediaRemote почему-то не ответил за 2 секунды, не ждём его вечно.
+    if (gRefreshInFlight && now - gRefreshStarted < 2.0) {
+        gRefreshPending = YES;
+        return;
+    }
+    gRefreshInFlight = YES;
+    gRefreshStarted = now;
+    performRefresh(0);
 }
 
 static void scheduleRefresh(void) {

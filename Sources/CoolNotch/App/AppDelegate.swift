@@ -87,7 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showSettings() {
         viewModel?.close()
         if settingsWindow == nil {
-            let hosting = NSHostingController(rootView: SettingsView(notifications: viewModel?.notifications, updates: viewModel?.updates))
+            let hosting = NSHostingController(rootView: SettingsView(notifications: viewModel?.notifications, updates: viewModel?.updates, nowPlaying: viewModel?.nowPlaying))
             let window = NSWindow(contentViewController: hosting)
             window.title = "Cool Notch — настройки"
             window.styleMask = [.titled, .closable, .miniaturizable]
