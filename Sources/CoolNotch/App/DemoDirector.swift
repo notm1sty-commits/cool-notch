@@ -11,8 +11,24 @@ final class DemoDirector {
         vm = viewModel
     }
 
+    private var backdrop: NSWindow?
+
     func run() {
+        showBackdrop()
         Task { await play() }
+    }
+
+    /// Обои под чёлкой, чтобы на записи было видно её форму.
+    private func showBackdrop() {
+        guard let screen = NSScreen.main else { return }
+        let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = true
+        window.contentView = NSHostingView(rootView: DemoWallpaper())
+        window.setFrame(screen.frame, display: true)
+        window.orderFrontRegardless()
+        backdrop = window
     }
 
     private func wait(_ seconds: Double) async {
@@ -41,6 +57,18 @@ final class DemoDirector {
         )
         await wait(4.5)
 
+        // 2б. Пришло сообщение — системное уведомление в чёлке.
+        vm.post(NotchBanner(
+            icon: .app("com.apple.MobileSMS"),
+            tint: .white,
+            title: "Аня",
+            subtitle: "Ты видел новую чёлку? Выглядит прямо как на iPhone, очень плавно!",
+            duration: 4,
+            action: .openApp("com.apple.MobileSMS"),
+            expanded: true
+        ))
+        await wait(5)
+
         // 3. Наведение: чёлка чуть подрастает, затем раскрывается.
         vm.demoHover(true)
         await wait(0.6)
@@ -62,6 +90,16 @@ final class DemoDirector {
         await wait(1.4)
         vm.nowPlaying.setDemoPlaying(true)
         await wait(1.2)
+
+        // 6б. Включили видео на YouTube — оно запущено последним, поэтому теперь в чёлке оно.
+        vm.nowPlaying.showDemo(
+            track: NowPlayingTrack(title: "Как приготовить идеальный эспрессо", artist: "Coffee Lab · YouTube", album: "", duration: 642),
+            artwork: Self.artwork(colors: [NSColor(red: 0.95, green: 0.2, blue: 0.2, alpha: 1), NSColor(red: 0.35, green: 0.08, blue: 0.08, alpha: 1)]),
+            playing: true,
+            elapsed: 95,
+            source: .browser(.chrome)
+        )
+        await wait(2.5)
 
         // 7. Курсор ушёл — чёлка сворачивается обратно в «ушки» с таймером.
         vm.demoHover(false)
@@ -127,5 +165,29 @@ final class DemoDirector {
             }
             return true
         }
+    }
+}
+
+/// Обои для записи демо: мягкий градиент в духе macOS.
+private struct DemoWallpaper: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(red: 0.16, green: 0.22, blue: 0.52), Color(red: 0.55, green: 0.32, blue: 0.75), Color(red: 0.98, green: 0.62, blue: 0.55)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Circle()
+                .fill(Color(red: 0.3, green: 0.75, blue: 0.95).opacity(0.55))
+                .frame(width: 700, height: 700)
+                .blur(radius: 140)
+                .offset(x: -300, y: -220)
+            Circle()
+                .fill(Color(red: 1, green: 0.45, blue: 0.6).opacity(0.5))
+                .frame(width: 600, height: 600)
+                .blur(radius: 140)
+                .offset(x: 320, y: 160)
+        }
+        .ignoresSafeArea()
     }
 }

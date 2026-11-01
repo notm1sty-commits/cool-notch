@@ -3,6 +3,8 @@ import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
+    var notifications: NotificationMirror?
+
     @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
     @AppStorage(Pref.showMusicActivity) var showMusic = true
@@ -12,6 +14,7 @@ struct SettingsView: View {
     @AppStorage(Pref.deviceBanners) var deviceBanners = true
     @AppStorage(Pref.browserMusic) var browserMusic = false
     @AppStorage(Pref.systemNowPlaying) var systemNowPlaying = true
+    @AppStorage(Pref.systemNotifications) var systemNotifications = true
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
     @AppStorage(Pref.openOnFileDrag) var openOnFileDrag = true
     @AppStorage(Pref.timerSound) var timerSound = true
@@ -41,7 +44,11 @@ struct SettingsView: View {
             }
 
             Section("Уведомления в чёлке") {
-                Toggle("Смена трека", isOn: $trackBanners)
+                Toggle("Уведомления всех приложений", isOn: $systemNotifications)
+                if systemNotifications, let notifications {
+                    NotificationAccessRow(mirror: notifications)
+                }
+                Toggle("Смена трека и видео", isOn: $trackBanners)
                 Toggle("Подключение наушников и колонок", isOn: $deviceBanners)
                 Toggle("Низкий заряд батареи", isOn: $showLowBattery)
                 Toggle("Звук по окончании таймера", isOn: $timerSound)
@@ -125,5 +132,36 @@ struct SettingsView: View {
 
     private static var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+}
+
+/// Статус доступа к уведомлениям и подсказки.
+private struct NotificationAccessRow: View {
+    let mirror: NotificationMirror
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch mirror.status {
+            case .running:
+                Label("Работает — новые уведомления появятся в чёлке", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("Чтобы не было двойных баннеров, в «Системных настройках» → «Уведомления» можно выбрать для приложений стиль «Нет» — в чёлке они всё равно появятся.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .needsAccess, .off:
+                Text("macOS не даёт приложениям читать чужие уведомления напрямую. Cool Notch читает журнал Центра уведомлений на твоём Маке (только чтение, никуда не отправляется). Для этого нужен «Полный доступ к диску»: добавь туда Cool Notch и включи переключатель.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Открыть «Полный доступ к диску»") {
+                    mirror.openPrivacySettings()
+                }
+            case .unavailable:
+                Text("Не удалось прочитать журнал уведомлений на этой версии macOS.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }

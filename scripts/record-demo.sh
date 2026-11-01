@@ -6,7 +6,11 @@ cd "$(dirname "$0")/.."
 OUT="preview"
 mkdir -p "$OUT"
 APP=".build/app/Cool Notch.app/Contents/MacOS/CoolNotch"
-DURATION=40
+DURATION=52
+
+# Информация об экране — пригодится, чтобы поднять разрешение записи.
+(displayplacer list 2>/dev/null | head -60) > "$OUT/displays.txt" || true
+system_profiler SPDisplaysDataType >> "$OUT/displays.txt" 2>/dev/null || true
 
 "$APP" --demo > "$OUT/app.log" 2>&1 &
 APP_PID=$!
@@ -45,7 +49,7 @@ ffmpeg -y -loglevel error -i "$OUT/raw.mov" \
   "$OUT/cool-notch-demo.mp4"
 
 # Отдельные кадры ключевых моментов.
-for t in 2 5 9 12 14 16 18 20 22 25 29 33; do
+for t in 3 6 9 13 17 20 23 25 27 29 31 34 37 41 46; do
   ffmpeg -y -loglevel error -ss "$t" -i "$OUT/cool-notch-demo.mp4" -frames:v 1 "$OUT/frame-$(printf '%02d' "$t")s.png"
 done
 

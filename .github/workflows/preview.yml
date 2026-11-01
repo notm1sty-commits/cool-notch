@@ -23,8 +23,10 @@ jobs:
       - name: Allow screen recording (CI only)
         run: ./scripts/ci-grant-screen-capture.sh
 
-      - name: Install ffmpeg
-        run: brew install ffmpeg
+      - name: Install tools
+        run: |
+          brew install ffmpeg
+          brew install displayplacer || true
 
       - name: Record demo
         run: ./scripts/record-demo.sh

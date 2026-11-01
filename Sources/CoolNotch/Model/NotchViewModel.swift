@@ -15,6 +15,15 @@ struct NotchBanner: Identifiable, Equatable {
     enum Icon: Equatable {
         case symbol(String)
         case artwork
+        /// Иконка приложения по bundle id.
+        case app(String)
+    }
+
+    enum Action: Equatable {
+        case openNotch
+        /// Перейти к источнику музыки/видео (плеер или вкладка браузера).
+        case openSource
+        case openApp(String)
     }
 
     let id = UUID()
@@ -23,6 +32,9 @@ struct NotchBanner: Identifiable, Equatable {
     var title: String
     var subtitle: String?
     var duration: TimeInterval = 4
+    var action: Action = .openNotch
+    /// Две строки текста (для уведомлений с длинным текстом).
+    var expanded = false
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
@@ -82,6 +94,7 @@ final class NotchViewModel {
     let clipboard: ClipboardService
     let timer: TimerService
     let audio: AudioOutputMonitor
+    let notifications: NotificationMirror
 
     // MARK: Plumbing
 
@@ -95,6 +108,7 @@ final class NotchViewModel {
     @ObservationIgnored private var bannerTask: Task<Void, Never>?
     @ObservationIgnored private var bannerQueue: [NotchBanner] = []
     @ObservationIgnored private var powerObserver: NSObjectProtocol?
+    @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
 
     init() {
         nowPlaying = NowPlayingService()
@@ -103,6 +117,7 @@ final class NotchViewModel {
         clipboard = ClipboardService()
         timer = TimerService()
         audio = AudioOutputMonitor()
+        notifications = NotificationMirror()
 
         battery.onPluggedIn = { [weak self] in
             guard Pref.bool(Pref.showChargingActivity) else { return }
@@ -133,12 +148,25 @@ final class NotchViewModel {
                 icon: .artwork,
                 tint: self.nowPlaying.accent,
                 title: track.title,
-                subtitle: track.artist.isEmpty ? nil : track.artist,
-                duration: 3.2
+                subtitle: track.artist.isEmpty ? self.nowPlaying.sourceName : track.artist,
+                duration: 3.2,
+                action: .openSource
             ))
         }
         audio.onChange = { [weak self] device, previous in
             self?.audioDeviceChanged(device, previous: previous)
+        }
+        notifications.onNotification = { [weak self] notification in
+            self?.showSystemNotification(notification)
+        }
+        notifications.update(enabled: Pref.bool(Pref.systemNotifications))
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.notifications.update(enabled: Pref.bool(Pref.systemNotifications))
+            }
         }
 
         powerObserver = NotificationCenter.default.addObserver(
@@ -193,7 +221,8 @@ final class NotchViewModel {
     }
 
     var bannerSize: CGSize {
-        CGSize(width: max(notchSize.width + 240, 420), height: notchSize.height + 56)
+        let extra: CGFloat = banner?.expanded == true ? 18 : 0
+        return CGSize(width: max(notchSize.width + 260, 440), height: notchSize.height + 56 + extra)
     }
 
     var openSize: CGSize {
@@ -254,6 +283,15 @@ final class NotchViewModel {
         closeTask?.cancel()
         closeTask = nil
 
+        // Курсор на уведомлении — держим его, чтобы можно было прочитать и нажать.
+        if banner != nil, !isOpen, !fileDrag {
+            bannerTask?.cancel()
+            bannerTask = nil
+            openTask?.cancel()
+            openTask = nil
+            return
+        }
+
         if fileDrag {
             guard Pref.bool(Pref.openOnFileDrag) else { return }
             select(.shelf)
@@ -280,6 +318,12 @@ final class NotchViewModel {
         if openTask != nil {
             openTask?.cancel()
             openTask = nil
+        }
+        if banner != nil, bannerTask == nil {
+            bannerTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+                self?.dismissBanner()
+            }
         }
         guard isOpen, !isPinned, closeTask == nil else { return }
         closeTask = Task { [weak self] in
@@ -361,6 +405,40 @@ final class NotchViewModel {
             do { try await Task.sleep(for: .seconds(3.5)) } catch { return }
             self?.isChargingFlash = false
         }
+    }
+
+    /// Нажатие на уведомление в чёлке.
+    func performBannerAction(_ banner: NotchBanner) {
+        dismissBanner()
+        switch banner.action {
+        case .openNotch:
+            open(pinned: true)
+        case .openSource:
+            nowPlaying.openSourceApp()
+        case .openApp(let bundleID):
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                app.activate()
+            } else if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+            }
+        }
+    }
+
+    private func showSystemNotification(_ notification: SystemNotification) {
+        let appName = NSWorkspace.shared.urlForApplication(withBundleIdentifier: notification.bundleID)
+            .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? ""
+        let title = notification.title.isEmpty ? appName : notification.title
+        let text = [notification.subtitle, notification.body].filter { !$0.isEmpty }.joined(separator: " — ")
+        guard !title.isEmpty || !text.isEmpty else { return }
+        post(NotchBanner(
+            icon: .app(notification.bundleID),
+            tint: .white,
+            title: title.isEmpty ? text : title,
+            subtitle: title.isEmpty ? nil : (text.isEmpty ? appName : text),
+            duration: 5,
+            action: .openApp(notification.bundleID),
+            expanded: text.count > 44
+        ))
     }
 
     private func audioDeviceChanged(_ device: AudioOutputDevice, previous: AudioOutputDevice?) {

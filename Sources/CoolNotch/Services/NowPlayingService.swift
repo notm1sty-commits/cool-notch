@@ -9,7 +9,7 @@ struct NowPlayingTrack: Equatable {
     var duration: Double
 }
 
-enum PlayerSource: Equatable {
+enum PlayerSource: Hashable {
     case music
     case spotify
     case browser(BrowserKind)
@@ -24,6 +24,15 @@ enum PlayerSource: Equatable {
         case .system(let bundleID): return bundleID
         }
     }
+
+    /// Браузер, если источник — вкладка (в том числе через системный «Что играет»).
+    var browserKind: BrowserKind? {
+        switch self {
+        case .browser(let kind): return kind
+        case .system(let bundleID): return BrowserKind.allCases.first { $0.bundleID == bundleID }
+        case .music, .spotify: return nil
+        }
+    }
 }
 
 /// Плеер, который не сообщает название трека (например, приложение Яндекс Музыка),
@@ -32,6 +41,22 @@ struct ExternalPlayer: Equatable {
     let name: String
     let bundleID: String
     let icon: NSImage?
+}
+
+/// Один источник медиа (Музыка, Spotify, вкладка браузера, системный «Что играет»).
+private struct MediaCandidate {
+    var source: PlayerSource
+    var track: NowPlayingTrack
+    var isPlaying: Bool
+    var elapsed: Double
+    var elapsedTimestamp: Date
+    /// Когда источник последний раз запустили, поставили на паузу или сменили трек.
+    var lastActivity: Date
+    var artworkKey: String
+    var artwork: NSImage?
+    var tabURL: String?
+    var tabTitle: String?
+    var pid: pid_t?
 }
 
 private enum MediaCommand {
@@ -45,19 +70,19 @@ private enum MediaCommand {
         }
     }
 
-    var key: MediaKeys.Key {
-        switch self {
-        case .toggle: return .playPause
-        case .next: return .next
-        case .previous: return .previous
-        }
-    }
-
     var bridgeCommand: String {
         switch self {
         case .toggle: return "toggle"
         case .next: return "next"
         case .previous: return "prev"
+        }
+    }
+
+    var key: MediaKeys.Key {
+        switch self {
+        case .toggle: return .playPause
+        case .next: return .next
+        case .previous: return .previous
         }
     }
 
@@ -70,8 +95,8 @@ private enum MediaCommand {
     }
 }
 
-/// Следит за тем, что играет: Музыка и Spotify (AppleScript), браузер (Media Session),
-/// а также за плеерами без данных о треке — ими управляем медиаклавишами.
+/// Следит за всем, что играет: музыка и видео из любых источников.
+/// Показываем то, что запустили последним; если всё на паузе — то, что последним поставили на паузу.
 @MainActor
 @Observable
 final class NowPlayingService {
@@ -95,10 +120,9 @@ final class NowPlayingService {
     private let browser: BrowserMediaSource
     private let mediaRemote: MediaRemote?
     private let bridge: MediaBridgeProcess
-    @ObservationIgnored private var bridgeHasTrack = false
-    /// Демо-режим: данные подставляет DemoDirector, реальные источники не трогаем.
+    @ObservationIgnored private var candidates: [PlayerSource: MediaCandidate] = [:]
+    @ObservationIgnored private var displayedKey: String?
     @ObservationIgnored private var isDemo = false
-    @ObservationIgnored private var artworkKey: String?
     @ObservationIgnored private var distributedObservers: [DistributedObserver] = []
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
     @ObservationIgnored private var pollTimer: Timer?
@@ -157,11 +181,14 @@ final class NowPlayingService {
     }
 
     func togglePlayPause() {
-        if track != nil {
+        if let source, var candidate = candidates[source] {
             let now = Date()
-            elapsed = position(at: now)
-            elapsedTimestamp = now
-            isPlaying.toggle()
+            candidate.elapsed = position(at: now)
+            candidate.elapsedTimestamp = now
+            candidate.isPlaying.toggle()
+            candidate.lastActivity = now
+            candidates[source] = candidate
+            recompute()
         }
         perform(.toggle)
     }
@@ -170,31 +197,46 @@ final class NowPlayingService {
     func previous() { perform(.previous) }
 
     func seek(to seconds: Double) {
-        elapsed = seconds
-        elapsedTimestamp = Date()
+        guard let source else { return }
+        if var candidate = candidates[source] {
+            candidate.elapsed = seconds
+            candidate.elapsedTimestamp = Date()
+            candidates[source] = candidate
+            recompute()
+        }
         switch source {
-        case .music?, .spotify?:
-            runner.run("tell application id \"\(source?.bundleID ?? "")\" to set player position to \(String(format: "%.2f", seconds))")
+        case .music, .spotify:
+            runner.run("tell application id \"\(source.bundleID)\" to set player position to \(String(format: "%.2f", seconds))")
             scheduleRefresh()
-        case .browser(let kind)?:
+        case .browser(let kind):
             browser.seek(in: kind, to: seconds)
             scheduleRefresh()
-        case .system?:
+        case .system:
             bridge.send("seek \(String(format: "%.2f", seconds))")
-        case nil:
-            break
         }
     }
 
+    /// Переходит к источнику: плеер — на передний план, видео в браузере — на нужную вкладку.
     func openSourceApp() {
-        let id = source?.bundleID ?? externalPlayer?.bundleID ?? installedPlayers.first?.bundleID
-        guard let id, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return }
-        NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+        guard let source else {
+            let id = externalPlayer?.bundleID ?? installedPlayers.first?.bundleID
+            if let id { openApp(bundleID: id) }
+            return
+        }
+        let candidate = candidates[source]
+        if let kind = source.browserKind {
+            browser.focusTab(in: kind, title: candidate?.tabTitle ?? candidate?.track.title ?? "", url: candidate?.tabURL)
+            return
+        }
+        if let pid = candidate?.pid, let app = NSRunningApplication(processIdentifier: pid) {
+            app.activate()
+            return
+        }
+        openApp(bundleID: source.bundleID)
     }
 
     func launch(_ player: PlayerSource) {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: player.bundleID) else { return }
-        NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+        openApp(bundleID: player.bundleID)
     }
 
     var installedPlayers: [PlayerSource] {
@@ -224,21 +266,39 @@ final class NowPlayingService {
 
     // MARK: - Demo
 
-    func showDemo(track newTrack: NowPlayingTrack, artwork image: NSImage?, playing: Bool, elapsed position: Double) {
+    func showDemo(
+        track newTrack: NowPlayingTrack,
+        artwork image: NSImage?,
+        playing: Bool,
+        elapsed position: Double,
+        source demoSource: PlayerSource = .music
+    ) {
         isDemo = true
         bridge.stop()
-        setSource(.music)
-        setArtwork(image)
-        updateTrack(newTrack, playing: playing)
-        elapsed = position
-        elapsedTimestamp = Date()
+        var candidate = MediaCandidate(
+            source: demoSource,
+            track: newTrack,
+            isPlaying: playing,
+            elapsed: position,
+            elapsedTimestamp: Date(),
+            lastActivity: Date(),
+            artworkKey: "demo|\(newTrack.title)",
+            artwork: image
+        )
+        candidate.pid = nil
+        candidates = [demoSource: candidate]
+        recompute()
     }
 
     func setDemoPlaying(_ playing: Bool) {
+        guard let source, var candidate = candidates[source] else { return }
         let now = Date()
-        elapsed = position(at: now)
-        elapsedTimestamp = now
-        isPlaying = playing
+        candidate.elapsed = position(at: now)
+        candidate.elapsedTimestamp = now
+        candidate.isPlaying = playing
+        candidate.lastActivity = now
+        candidates[source] = candidate
+        recompute()
     }
 
     // MARK: - Commands
@@ -247,6 +307,8 @@ final class NowPlayingService {
         switch source {
         case .music?, .spotify?:
             runner.run("tell application id \"\(source?.bundleID ?? "")\" to \(command.appleScript)")
+        case .system?:
+            bridge.send(command.bridgeCommand)
         case .browser(let kind)?:
             if MediaKeys.isTrusted {
                 MediaKeys.post(command.key)
@@ -255,8 +317,6 @@ final class NowPlayingService {
             } else {
                 requestControlAccess()
             }
-        case .system?:
-            bridge.send(command.bridgeCommand)
         case nil:
             if MediaKeys.isTrusted {
                 MediaKeys.post(command.key)
@@ -275,20 +335,138 @@ final class NowPlayingService {
         }
     }
 
+    // MARK: - Choosing what to show
+
+    private func upsert(
+        _ source: PlayerSource,
+        track newTrack: NowPlayingTrack,
+        playing: Bool,
+        elapsed position: Double,
+        timestamp: Date,
+        artworkKey: String,
+        tabURL: String? = nil,
+        tabTitle: String? = nil,
+        pid: pid_t? = nil
+    ) -> Bool {
+        let now = Date()
+        var candidate = candidates[source] ?? MediaCandidate(
+            source: source,
+            track: newTrack,
+            isPlaying: playing,
+            elapsed: position,
+            elapsedTimestamp: timestamp,
+            lastActivity: now,
+            artworkKey: ""
+        )
+        if candidate.isPlaying != playing || candidate.track.title != newTrack.title || candidate.track.artist != newTrack.artist {
+            candidate.lastActivity = now
+        }
+        candidate.track = newTrack
+        candidate.isPlaying = playing
+        candidate.elapsed = position
+        candidate.elapsedTimestamp = timestamp
+        if let tabURL { candidate.tabURL = tabURL }
+        if let tabTitle { candidate.tabTitle = tabTitle }
+        if let pid { candidate.pid = pid }
+        let artworkChanged = candidate.artworkKey != artworkKey
+        if artworkChanged {
+            candidate.artworkKey = artworkKey
+            candidate.artwork = nil
+        }
+        candidates[source] = candidate
+        return artworkChanged
+    }
+
+    private func removeCandidate(_ source: PlayerSource) {
+        guard candidates.removeValue(forKey: source) != nil else { return }
+        recompute()
+    }
+
+    private func setArtwork(_ image: NSImage?, for source: PlayerSource, key: String) {
+        guard var candidate = candidates[source], candidate.artworkKey == key else { return }
+        candidate.artwork = image
+        candidates[source] = candidate
+        recompute()
+    }
+
+    /// Выбирает, что показать, и обновляет наблюдаемые свойства (только если что-то изменилось).
+    private func recompute() {
+        // Системный «Что играет» уже знает про Музыку/Spotify — не показываем их дважды.
+        let systemBundles = Set(candidates.keys.compactMap { key -> String? in
+            if case .system(let id) = key { return id }
+            return nil
+        })
+        let visible = candidates.values.filter { candidate in
+            if case .system = candidate.source { return true }
+            return !systemBundles.contains(candidate.source.bundleID)
+        }
+        let latest: (MediaCandidate, MediaCandidate) -> Bool = { $0.lastActivity < $1.lastActivity }
+        let chosen = visible.filter(\.isPlaying).max(by: latest) ?? visible.max(by: latest)
+
+        guard let chosen else {
+            if source != nil || track != nil {
+                source = nil
+                track = nil
+                isPlaying = false
+                sourceName = ""
+                sourceIcon = nil
+                displayedKey = nil
+                applyArtwork(nil)
+            }
+            return
+        }
+
+        if source != chosen.source {
+            source = chosen.source
+            let info = chosen.pid.flatMap { NSRunningApplication(processIdentifier: $0) }
+            let fallback = appInfo(for: chosen.source.bundleID)
+            sourceName = info?.localizedName ?? fallback.name
+            sourceIcon = info?.icon ?? fallback.icon
+        }
+        if isPlaying != chosen.isPlaying { isPlaying = chosen.isPlaying }
+        if track != chosen.track { track = chosen.track }
+        if elapsed != chosen.elapsed { elapsed = chosen.elapsed }
+        if elapsedTimestamp != chosen.elapsedTimestamp { elapsedTimestamp = chosen.elapsedTimestamp }
+        if artwork !== chosen.artwork { applyArtwork(chosen.artwork) }
+
+        let key = "\(chosen.source.bundleID)|\(chosen.track.title)|\(chosen.track.artist)"
+        if key != displayedKey {
+            let hadTrack = displayedKey != nil
+            displayedKey = key
+            if chosen.isPlaying, hadTrack || Date().timeIntervalSince(launchDate) > 3 {
+                onTrackChange?(chosen.track)
+            }
+        }
+    }
+
+    private func applyArtwork(_ image: NSImage?) {
+        artwork = image
+        let color = image?.vibrantAverageColor ?? .white
+        if color != accentNSColor {
+            accentNSColor = color
+            accent = Color(nsColor: color)
+        }
+    }
+
     // MARK: - Refresh
 
     private func isRunning(_ bundleID: String) -> Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
 
+    private var bridgeHasTrack: Bool {
+        candidates.keys.contains { if case .system = $0 { return true } else { return false } }
+    }
+
     private func refreshAll() {
         guard !isDemo else { return }
-        if bridgeHasTrack {
-            bridge.send("refresh")
-            return
-        }
-        for player in [PlayerSource.spotify, .music] where isRunning(player.bundleID) {
-            refresh(player)
+        if bridgeHasTrack { bridge.send("refresh") }
+        for player in [PlayerSource.spotify, .music] {
+            if isRunning(player.bundleID) {
+                refresh(player)
+            } else {
+                removeCandidate(player)
+            }
         }
         pollBrowsers()
     }
@@ -305,47 +483,65 @@ final class NowPlayingService {
         } else if !wantsBridge, bridge.isEnabled {
             bridge.stop()
         }
-        // Пока системный источник знает трек, он сам присылает изменения — опрашивать ничего не нужно.
-        if bridgeHasTrack { return }
 
-        switch source {
-        case .music?, .spotify?:
-            guard let source else { return }
-            if !isRunning(source.bundleID) {
-                clear()
-                refreshAll()
-            } else if isPlaying {
-                refresh(source)  // синхронизируем позицию
-            } else {
-                pollBrowsers()   // вдруг музыка заиграла в браузере
+        // Музыку и Spotify опрашиваем только пока они играют (позиция); остальное — по уведомлениям.
+        for player in [PlayerSource.spotify, .music] {
+            if !isRunning(player.bundleID) {
+                removeCandidate(player)
+            } else if candidates[player]?.isPlaying == true {
+                refresh(player)
             }
-        case .browser?, .system?:
-            pollBrowsers()
-        case nil:
-            // Без активного плеера не опрашиваем часто: Музыка и Spotify сами присылают уведомления.
-            pollBrowsers()
         }
+        // Браузер не умеет присылать уведомления, поэтому опрашиваем его (если включено).
+        // Если системный «Что играет» уже видит браузер — вкладки опрашивать не нужно.
+        let systemSeesBrowser = candidates.keys.contains { key in
+            if case .system = key { return key.browserKind != nil }
+            return false
+        }
+        if !systemSeesBrowser { pollBrowsers() }
     }
 
     private func refresh(_ player: PlayerSource) {
         // Никогда не запускаем плеер сами: «tell application» открыл бы его.
+        guard !isDemo else { return }
         guard isRunning(player.bundleID) else {
-            if source == player { clear() }
+            removeCandidate(player)
             return
         }
         runner.run(Self.stateScript(for: player), parse: { AppleScriptRunner.parseSnapshot($0) }) { [weak self] snapshot in
-            self?.apply(snapshot, from: player)
+            self?.applySnapshot(snapshot, from: player)
         }
     }
 
+    private func applySnapshot(_ snapshot: PlayerSnapshot?, from player: PlayerSource) {
+        guard !isDemo, let snapshot else { return }
+        guard snapshot.state != "stopped", !snapshot.title.isEmpty else {
+            removeCandidate(player)
+            return
+        }
+        let key = "\(player.bundleID)|\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
+        let needsArtwork = upsert(
+            player,
+            track: NowPlayingTrack(title: snapshot.title, artist: snapshot.artist, album: snapshot.album, duration: snapshot.duration),
+            playing: snapshot.state == "playing",
+            elapsed: snapshot.position,
+            timestamp: Date(),
+            artworkKey: key
+        )
+        recompute()
+        if needsArtwork { loadArtwork(for: player, url: snapshot.artworkURL, key: key) }
+    }
+
     private func pollBrowsers() {
+        guard !isDemo else { return }
+        let browserSources = candidates.keys.filter { if case .browser = $0 { return true } else { return false } }
         guard Pref.bool(Pref.browserMusic) else {
-            if case .browser? = source { clear() }
+            browserSources.forEach(removeCandidate)
             return
         }
         let running = BrowserKind.allCases.filter { isRunning($0.bundleID) }
         guard !running.isEmpty else {
-            if case .browser? = source { clear() }
+            browserSources.forEach(removeCandidate)
             return
         }
         browser.fetch(from: running) { [weak self] result in
@@ -354,129 +550,79 @@ final class NowPlayingService {
     }
 
     private func applyBrowser(_ result: BrowserFetchResult) {
+        guard !isDemo else { return }
         if result.needsSetup != browserNeedsSetup { browserNeedsSetup = result.needsSetup }
-        guard let media = result.media, let kind = result.kind else {
-            if case .browser? = source { clear() }
-            return
+        for kind in BrowserKind.allCases {
+            let source = PlayerSource.browser(kind)
+            guard let media = result.media[kind] else {
+                removeCandidate(source)
+                continue
+            }
+            let key = "\(kind.rawValue)|\(media.url)|\(media.title)"
+            let needsArtwork = upsert(
+                source,
+                track: NowPlayingTrack(title: media.title, artist: media.artist, album: media.album, duration: media.duration),
+                playing: media.playing,
+                elapsed: media.position,
+                timestamp: Date(),
+                artworkKey: key,
+                tabURL: media.url,
+                tabTitle: media.tabTitle
+            )
+            if needsArtwork { loadArtwork(for: source, url: media.artwork.isEmpty ? nil : media.artwork, key: key) }
         }
-        let snapshot = PlayerSnapshot(
-            state: media.playing ? "playing" : "paused",
-            title: media.title,
-            artist: media.artist,
-            album: media.album,
-            duration: media.duration,
-            position: media.position,
-            artworkURL: media.artwork.isEmpty ? nil : media.artwork
-        )
-        apply(snapshot, from: .browser(kind))
-    }
-
-    private func apply(_ snapshot: PlayerSnapshot?, from player: PlayerSource) {
-        // Системный «Что играет» главнее: он видит все плееры сразу.
-        guard let snapshot, !bridgeHasTrack, !isDemo else { return }
-        let playing = snapshot.state == "playing"
-
-        // Не даём плееру на паузе перебить тот, что сейчас играет.
-        if let source, source != player, isPlaying, !playing { return }
-
-        if snapshot.state == "stopped" || snapshot.title.isEmpty {
-            if source == player { clear() }
-            return
-        }
-
-        setSource(player)
-        updateTrack(
-            NowPlayingTrack(title: snapshot.title, artist: snapshot.artist, album: snapshot.album, duration: snapshot.duration),
-            playing: playing
-        )
-        elapsed = snapshot.position
-        elapsedTimestamp = Date()
-
-        let key = "\(player.bundleID)|\(snapshot.title)|\(snapshot.artist)|\(snapshot.album)"
-        if key != artworkKey {
-            artworkKey = key
-            loadArtwork(for: player, url: snapshot.artworkURL, key: key)
-        }
-    }
-
-    private func setSource(_ player: PlayerSource) {
-        guard source != player else { return }
-        source = player
-        let info = appInfo(for: player.bundleID)
-        sourceName = info.name
-        sourceIcon = info.icon
-    }
-
-    private func updateTrack(_ newTrack: NowPlayingTrack, playing: Bool) {
-        if isPlaying != playing { isPlaying = playing }
-        guard track != newTrack else { return }
-        let titleChanged = track?.title != newTrack.title || track?.artist != newTrack.artist
-        track = newTrack
-        if titleChanged, playing, Date().timeIntervalSince(launchDate) > 3 {
-            onTrackChange?(newTrack)
-        }
+        recompute()
     }
 
     private func applyBridge(_ event: BridgeEvent) {
         guard !isDemo else { return }
+        let systemSources = candidates.keys.filter { if case .system = $0 { return true } else { return false } }
         switch event {
         case .ready:
             break
         case .stopped:
-            let had = bridgeHasTrack
-            bridgeHasTrack = false
-            if case .system? = source { clear() }
-            if had { refreshAll() }
+            systemSources.forEach(removeCandidate)
         case .info(let info):
             guard !info.isEmpty else {
-                let had = bridgeHasTrack
-                bridgeHasTrack = false
-                if case .system? = source { clear() }
-                if had { refreshAll() }  // возвращаемся к Музыке/Spotify/браузеру
+                systemSources.forEach(removeCandidate)
                 return
             }
-            bridgeHasTrack = true
             let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid) : nil
-            let player = PlayerSource.system(app?.bundleIdentifier ?? "")
-            if source != player {
-                source = player
-                sourceName = app?.localizedName ?? ""
-                sourceIcon = app?.icon
-            }
-            updateTrack(
-                NowPlayingTrack(title: info.title, artist: info.artist, album: info.album, duration: info.duration),
-                playing: info.isPlaying
-            )
-            elapsed = info.elapsed
-            elapsedTimestamp = info.timestamp > 0 ? Date(timeIntervalSince1970: info.timestamp) : Date()
+            let source = PlayerSource.system(app?.bundleIdentifier ?? "")
+            // Системный источник всегда один — убираем прежний, если сменилось приложение.
+            for old in systemSources where old != source { candidates.removeValue(forKey: old) }
 
             let key = "system|\(info.title)|\(info.artist)|\(info.album)"
-            if let data = info.artwork {
-                artworkKey = key
-                setArtwork(NSImage(data: data))
-            } else if !info.hasArtwork, artwork != nil {
-                artworkKey = key
-                setArtwork(nil)
+            let artworkChanged = upsert(
+                source,
+                track: NowPlayingTrack(title: info.title, artist: info.artist, album: info.album, duration: info.duration),
+                playing: info.isPlaying,
+                elapsed: info.elapsed,
+                timestamp: info.timestamp > 0 ? Date(timeIntervalSince1970: info.timestamp) : Date(),
+                artworkKey: key,
+                pid: info.pid > 0 ? info.pid : nil
+            )
+            // Подтягиваем вкладку браузера, если её уже знаем из опроса.
+            if let kind = source.browserKind, let tab = candidates[.browser(kind)], tab.track.title == info.title {
+                candidates[source]?.tabURL = tab.tabURL
+                candidates[source]?.tabTitle = tab.tabTitle
             }
+            if let data = info.artwork {
+                candidates[source]?.artwork = NSImage(data: data)
+            } else if !info.hasArtwork {
+                candidates[source]?.artwork = nil
+            } else if artworkChanged {
+                bridge.send("refresh")
+            }
+            recompute()
         }
     }
 
     private func appTerminated(_ bundleID: String?) {
         refreshExternalPlayer()
-        guard let bundleID, bundleID == source?.bundleID else { return }
-        clear()
-        refreshAll()
-    }
-
-    private func clear() {
-        guard source != nil || track != nil else { return }
-        track = nil
-        isPlaying = false
-        source = nil
-        sourceName = ""
-        sourceIcon = nil
-        artworkKey = nil
-        setArtwork(nil)
+        guard let bundleID else { return }
+        let gone = candidates.keys.filter { $0.bundleID == bundleID }
+        gone.forEach(removeCandidate)
     }
 
     /// Ищем запущенные плееры, которые не сообщают трек (Яндекс Музыка и т. п.).
@@ -494,8 +640,19 @@ final class NowPlayingService {
         if player != externalPlayer { externalPlayer = player }
     }
 
+    private func openApp(bundleID: String) {
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+            app.activate()
+            return
+        }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: .init(), completionHandler: nil)
+    }
+
     private func appInfo(for bundleID: String) -> (name: String, icon: NSImage?) {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return ("", nil) }
+        guard !bundleID.isEmpty, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            return ("", nil)
+        }
         let name = FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
         if let cached = iconCache[bundleID] { return (name, cached) }
         let icon = NSWorkspace.shared.icon(forFile: url.path)
@@ -508,15 +665,11 @@ final class NowPlayingService {
     private func loadArtwork(for player: PlayerSource, url: String?, key: String) {
         switch player {
         case .spotify, .browser:
-            guard let url, let link = URL(string: url), link.scheme?.hasPrefix("http") == true else {
-                setArtwork(nil)
-                return
-            }
+            guard let url, let link = URL(string: url), link.scheme?.hasPrefix("http") == true else { return }
             URLSession.shared.dataTask(with: link) { data, _, _ in
                 let image = data.flatMap { NSImage(data: $0) }
                 Task { @MainActor [weak self] in
-                    guard let self, self.artworkKey == key else { return }
-                    self.setArtwork(image)
+                    self?.setArtwork(image, for: player, key: key)
                 }
             }.resume()
         case .music:
@@ -530,19 +683,11 @@ final class NowPlayingService {
             end tell
             """
             runner.run(script, parse: { $0.data }) { [weak self] data in
-                guard let self, self.artworkKey == key else { return }
-                self.setArtwork(data.flatMap { NSImage(data: $0) })
+                self?.setArtwork(data.flatMap { NSImage(data: $0) }, for: player, key: key)
             }
         case .system:
             break
         }
-    }
-
-    private func setArtwork(_ image: NSImage?) {
-        artwork = image
-        let color = image?.vibrantAverageColor ?? .white
-        accentNSColor = color
-        accent = Color(nsColor: color)
     }
 
     // MARK: - Scripts

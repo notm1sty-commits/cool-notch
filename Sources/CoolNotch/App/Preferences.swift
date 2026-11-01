@@ -11,6 +11,7 @@ enum Pref {
     static let deviceBanners = "deviceBanners"
     static let browserMusic = "browserMusic"
     static let systemNowPlaying = "systemNowPlaying"
+    static let systemNotifications = "systemNotifications"
     static let clipboardHistory = "clipboardHistory"
     static let openOnFileDrag = "openOnFileDrag"
     static let timerSound = "timerSound"
@@ -28,6 +29,7 @@ enum Pref {
             deviceBanners: true,
             browserMusic: false,
             systemNowPlaying: true,
+            systemNotifications: true,
             clipboardHistory: true,
             openOnFileDrag: true,
             timerSound: true,

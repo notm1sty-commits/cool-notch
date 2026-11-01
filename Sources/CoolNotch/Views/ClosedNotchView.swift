@@ -75,6 +75,16 @@ struct ClosedNotchView: View {
 
 /// Уведомление, «выезжающее» из чёлки.
 struct BannerView: View {
+    @MainActor private static var iconCache: [String: NSImage] = [:]
+
+    @MainActor static func appIcon(_ bundleID: String) -> NSImage? {
+        if let cached = iconCache[bundleID] { return cached }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return nil }
+        let icon = NSWorkspace.shared.icon(forFile: url.path)
+        iconCache[bundleID] = icon
+        return icon
+    }
+
     @Environment(NotchViewModel.self) var vm
     let banner: NotchBanner
 
@@ -93,7 +103,8 @@ struct BannerView: View {
                         Text(subtitle)
                             .font(.system(size: 11.5))
                             .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(1)
+                            .lineLimit(banner.expanded ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 Spacer(minLength: 8)
@@ -112,8 +123,7 @@ struct BannerView: View {
         .foregroundStyle(.white)
         .contentShape(Rectangle())
         .onTapGesture {
-            vm.dismissBanner()
-            vm.open(pinned: true)
+            vm.performBannerAction(banner)
         }
         .onAppear { appeared = true }
     }
@@ -123,6 +133,20 @@ struct BannerView: View {
         switch banner.icon {
         case .artwork:
             ArtworkView(image: vm.nowPlaying.artwork, size: 34, corner: 8)
+        case .app(let bundleID):
+            if let icon = Self.appIcon(bundleID) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 36, height: 36)
+                    .scaleEffect(appeared ? 1 : 0.6)
+                    .animation(Theme.hover, value: appeared)
+            } else {
+                Image(systemName: "app.badge.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 34, height: 34)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+            }
         case .symbol(let name):
             Image(systemName: name)
                 .font(.system(size: 15, weight: .semibold))
