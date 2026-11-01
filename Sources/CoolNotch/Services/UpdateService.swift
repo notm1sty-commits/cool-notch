@@ -76,7 +76,13 @@ final class UpdateService {
         state = .checking
         Task {
             do {
-                let release = try await fetchLatest()
+                guard let release = try await fetchLatest() else {
+                    // Релизов ещё нет — это не ошибка, просто обновляться пока не на что.
+                    latest = nil
+                    lastCheck = Date()
+                    state = .upToDate
+                    return
+                }
                 latest = release
                 lastCheck = Date()
                 if release.build > currentBuild {
@@ -146,26 +152,36 @@ final class UpdateService {
         let name: String?
         let body: String?
         let html_url: URL?
+        let prerelease: Bool?
+        let draft: Bool?
         let assets: [Asset]
     }
 
-    private func fetchLatest() async throws -> Release {
-        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repository)/releases/latest")!)
+    /// Последний релиз. С «тестовыми сборками» учитываются и предварительные релизы из разработки.
+    private func fetchLatest() async throws -> Release? {
+        let beta = Pref.bool(Pref.betaUpdates)
+        let path = beta ? "releases?per_page=20" : "releases/latest"
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repository)/\(path)")!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("CoolNotch/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            throw UpdateError.message(http.statusCode == 404 ? "Релизов пока нет." : "GitHub ответил \(http.statusCode).")
+            if http.statusCode == 404 { return nil }
+            throw UpdateError.message(http.statusCode == 403 ? "GitHub временно ограничил запросы — попробуй позже." : "GitHub ответил \(http.statusCode).")
         }
-        let api = try JSONDecoder().decode(APIRelease.self, from: data)
-        guard let zip = api.assets.first(where: { $0.name.hasSuffix(".zip") }) else {
-            throw UpdateError.message("В релизе нет архива с приложением.")
-        }
+        let releases = beta
+            ? try JSONDecoder().decode([APIRelease].self, from: data).filter { !($0.draft ?? false) }
+            : [try JSONDecoder().decode(APIRelease.self, from: data)]
+        return releases.compactMap(Self.makeRelease).max { $0.build < $1.build }
+    }
+
+    private static func makeRelease(_ api: APIRelease) -> Release? {
+        guard let zip = api.assets.first(where: { $0.name.hasSuffix(".zip") }) else { return nil }
         let build = Self.buildNumber(in: api.tag_name) ?? Self.buildNumber(in: api.name ?? "") ?? 0
-        let version = Self.version(in: api.name ?? "") ?? api.tag_name
+        let versionText = Self.version(in: api.name ?? "") ?? api.tag_name
         return Release(
-            version: version,
+            version: (api.prerelease ?? false) ? "\(versionText) (тестовая)" : versionText,
             build: build,
             notes: api.body ?? "",
             zipURL: zip.browser_download_url,

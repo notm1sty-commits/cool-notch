@@ -20,6 +20,7 @@ enum Pref {
     static let screenshotsInHistory = "screenshotsInHistory"
     static let onboardingDone = "onboardingDone"
     static let autoCheckUpdates = "autoCheckUpdates"
+    static let betaUpdates = "betaUpdates"
     static let clipboardHistory = "clipboardHistory"
     static let openOnFileDrag = "openOnFileDrag"
     static let timerSound = "timerSound"
@@ -45,6 +46,7 @@ enum Pref {
             glassTint: 0.6,
             screenshotsInHistory: true,
             autoCheckUpdates: true,
+            betaUpdates: false,
             clipboardHistory: true,
             openOnFileDrag: true,
             timerSound: true,

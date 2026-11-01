@@ -79,6 +79,22 @@ jobs:
             .build/app/CoolNotch.dmg
             .build/app/CoolNotch.zip
 
+      # Сборки из веток разработки — «тестовые» (предварительные) релизы. Их видит кнопка
+      # «Обновить», если в настройках включены «Тестовые сборки».
+      - name: Publish test build
+        if: startsWith(github.ref, 'refs/heads/claude/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }}, тестовая)
+          prerelease: true
+          make_latest: "false"
+          body: Тестовая сборка из ветки ${{ github.ref_name }} (${{ github.sha }}).
+          files: |
+            .build/app/CoolNotch.dmg
+            .build/app/CoolNotch.zip
+
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2

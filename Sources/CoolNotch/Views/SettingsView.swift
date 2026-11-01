@@ -23,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(Pref.glassTint) var glassTint = 0.6
     @AppStorage(Pref.screenshotsInHistory) var screenshotsInHistory = true
     @AppStorage(Pref.autoCheckUpdates) var autoCheckUpdates = true
+    @AppStorage(Pref.betaUpdates) var betaUpdates = false
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
     @AppStorage(Pref.openOnFileDrag) var openOnFileDrag = true
     @AppStorage(Pref.timerSound) var timerSound = true
@@ -132,7 +133,7 @@ struct SettingsView: View {
             }
 
             if let updates {
-                UpdatesSection(updates: updates, autoCheck: $autoCheckUpdates)
+                UpdatesSection(updates: updates, autoCheck: $autoCheckUpdates, beta: $betaUpdates)
             }
 
             Section {
@@ -206,6 +207,7 @@ private struct NotificationAccessRow: View {
 private struct UpdatesSection: View {
     let updates: UpdateService
     @Binding var autoCheck: Bool
+    @Binding var beta: Bool
 
     var body: some View {
         Section("Обновления") {
@@ -228,6 +230,12 @@ private struct UpdatesSection: View {
                     .progressViewStyle(.linear)
             }
             Toggle("Проверять автоматически", isOn: $autoCheck)
+            Toggle("Тестовые сборки", isOn: $beta)
+                .onChange(of: beta) { _, _ in updates.check() }
+            Text("Свежие версии из разработки — сразу после каждого изменения, ещё до релиза. Могут быть сырыми.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .onChange(of: updates.state) { _, state in
             if Pref.bool(Pref.haptics), state == .available {
@@ -268,7 +276,7 @@ private struct UpdatesSection: View {
         case .available: return "Доступна версия \(updates.latest?.version ?? "")"
         case .downloading(let progress): return "Загрузка… \(Int(progress * 100))%"
         case .installing: return "Устанавливаю и перезапускаю…"
-        case .upToDate: return "Последняя версия"
+        case .upToDate: return updates.latest == nil ? "Обновлений пока нет" : "Последняя версия"
         case .failed: return "Не получилось обновить"
         case .idle: return updates.hasUpdate ? "Доступна версия \(updates.latest?.version ?? "")" : "Cool Notch \(updates.currentVersion)"
         }
