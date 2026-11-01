@@ -17,8 +17,8 @@ struct ExpandedNotchView: View {
                     .id(vm.tab)
                     .transition(
                         AsymmetricTransition(
-                            insertion: RevealTransition(blur: simple ? 0 : 6, scale: 0.98, offset: CGSize(width: simple ? 0 : shift, height: 0)),
-                            removal: RevealTransition(blur: simple ? 0 : 6, scale: 0.98, offset: CGSize(width: simple ? 0 : -shift, height: 0))
+                            insertion: RevealTransition(scale: 0.98, offset: CGSize(width: simple ? 0 : shift, height: 0)),
+                            removal: RevealTransition(scale: 0.98, offset: CGSize(width: simple ? 0 : -shift, height: 0))
                         )
                     )
             }
@@ -55,6 +55,21 @@ private struct HeaderBar: View {
             HStack(spacing: 9) {
                 if vm.battery.hasBattery {
                     BatteryBadge()
+                }
+                if vm.updates.hasUpdate {
+                    Button {
+                        vm.updates.install()
+                        vm.openSettings?()
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.green)
+                            .frame(width: 26, height: 26)
+                            .glass(13)
+                    }
+                    .buttonStyle(PressableButtonStyle())
+                    .help("Установить обновление")
+                    .transition(.scale.combined(with: .opacity))
                 }
                 Button {
                     vm.openSettings?()

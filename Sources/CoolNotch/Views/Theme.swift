@@ -25,32 +25,16 @@ enum Theme {
     static let chipRadius: CGFloat = 12
 }
 
-/// Появление «из дымки»: прозрачность, размытие, масштаб, сдвиг и (по желанию) RGB-расслоение.
+/// Спокойное появление: прозрачность и лёгкий масштаб от верхнего края, как у Dynamic Island.
+/// Без размытия и цветных эффектов.
 struct RevealTransition: Transition {
-    var blur: CGFloat = 10
-    var scale: CGFloat = 0.95
-    var offset: CGSize = CGSize(width: 0, height: -8)
-    var chromatic = false
+    var scale: CGFloat = 0.96
+    var offset: CGSize = CGSize(width: 0, height: -6)
 
     func body(content: Content, phase: TransitionPhase) -> some View {
         let identity = phase.isIdentity
         content
-            .background {
-                if chromatic {
-                    ZStack {
-                        content
-                            .colorMultiply(Color(red: 1, green: 0.18, blue: 0.4))
-                            .offset(x: identity ? 0 : -3.5)
-                        content
-                            .colorMultiply(Color(red: 0, green: 0.82, blue: 1))
-                            .offset(x: identity ? 0 : 3.5)
-                    }
-                    .opacity(identity ? 0 : 0.85)
-                    .allowsHitTesting(false)
-                }
-            }
             .opacity(identity ? 1 : 0)
-            .blur(radius: identity ? 0 : blur)
             .scaleEffect(identity ? 1 : scale, anchor: .top)
             .offset(identity ? .zero : offset)
     }

@@ -99,6 +99,18 @@ private struct MediaCandidate {
     var tabURL: String?
     var tabTitle: String?
     var pid: pid_t?
+    /// Системный «Что играет» сообщает только одно приложение. Прежние источники мы помним
+    /// (на паузе), чтобы между YouTube и музыкой можно было переключаться стрелками.
+    var isLive = true
+    /// Когда источник последний раз прислал данные.
+    var lastUpdate = Date()
+}
+
+/// Команда, которую только что отдал пользователь: пока источник не подтвердил её,
+/// не даём старым данным «переключить» карточку обратно (иначе она мигает).
+private struct PendingPlayback {
+    var playing: Bool
+    var until: Date
 }
 
 private enum MediaCommand {
@@ -159,6 +171,10 @@ final class NowPlayingService {
     private(set) var items: [MediaItem] = []
 
     @ObservationIgnored var onTrackChange: (@MainActor (NowPlayingTrack) -> Void)?
+    /// Вкладкой браузера нельзя управлять напрямую: выключен «JavaScript из Apple Events».
+    @ObservationIgnored var onBrowserControlUnavailable: (@MainActor (BrowserKind) -> Void)?
+    @ObservationIgnored private var pending: [PlayerSource: PendingPlayback] = [:]
+    @ObservationIgnored private var settleTask: Task<Void, Never>?
 
     private let runner: AppleScriptRunner
     private let browser: BrowserMediaSource
@@ -249,24 +265,68 @@ final class NowPlayingService {
     // MARK: - Per-item commands
 
     /// Пауза/воспроизведение конкретной карточки. Запуск одной ставит остальные на паузу — как в системе.
+    /// Команды явные (play/pause, а не «переключить») и адресованы именно этому источнику.
     func toggle(_ item: MediaItem) {
         let willPlay = !item.isPlaying
+        let now = Date()
         if willPlay {
             for other in items where other.isPlaying && other.id != item.id {
-                pause(other.id)
+                markLocal(other.id, playing: false, at: now)
+                if !isDemo { setPlayback(other.id, playing: false) }
             }
         }
-        if var candidate = candidates[item.id] {
-            let now = Date()
-            candidate.elapsed = item.position(at: now)
-            candidate.elapsedTimestamp = now
-            candidate.isPlaying = willPlay
-            candidate.lastActivity = now
-            candidates[item.id] = candidate
-            recompute()
-        }
+        markLocal(item.id, playing: willPlay, at: now)
+        recompute()
         if isDemo { return }
-        send(.toggle, to: item.id)
+        setPlayback(item.id, playing: willPlay) { [weak self] succeeded in
+            guard let self, !succeeded else { return }
+            // Напрямую не получилось (браузер не пускает JavaScript) — показываем вкладку, дальше сам.
+            self.pending[item.id] = nil
+            self.open(item)
+            if let kind = item.id.browserKind { self.onBrowserControlUnavailable?(kind) }
+            self.scheduleRefresh()
+        }
+    }
+
+    /// Сразу показываем результат нажатия, не дожидаясь плеера.
+    private func markLocal(_ source: PlayerSource, playing: Bool, at now: Date) {
+        guard var candidate = candidates[source] else { return }
+        if candidate.isPlaying {
+            let value = candidate.elapsed + now.timeIntervalSince(candidate.elapsedTimestamp)
+            candidate.elapsed = candidate.track.duration > 0 ? min(value, candidate.track.duration) : value
+        }
+        candidate.elapsedTimestamp = now
+        candidate.isPlaying = playing
+        candidate.lastActivity = now
+        candidates[source] = candidate
+        pending[source] = PendingPlayback(playing: playing, until: now.addingTimeInterval(2.5))
+    }
+
+    /// Явная команда play/pause конкретному источнику.
+    private func setPlayback(_ source: PlayerSource, playing: Bool, completion: (@MainActor (Bool) -> Void)? = nil) {
+        let candidate = candidates[source]
+        let bundleID = source.bundleID
+        defer { scheduleRefresh() }
+        // Музыка и Spotify понимают AppleScript — это точнее системного «Что играет».
+        if bundleID == PlayerSource.music.bundleID || bundleID == PlayerSource.spotify.bundleID {
+            runner.run("tell application id \"\(bundleID)\" to \(playing ? "play" : "pause")")
+            completion?(true)
+            return
+        }
+        // Текущий системный источник — через MediaRemote.
+        if case .system = source, candidate?.isLive != false {
+            bridge.send(playing ? "play" : "pause")
+            completion?(true)
+            return
+        }
+        // Вкладка браузера — через JavaScript в нужной вкладке.
+        if let kind = source.browserKind {
+            browser.perform(playing ? .play : .pause, in: kind, url: candidate?.tabURL) { succeeded in
+                completion?(succeeded)
+            }
+            return
+        }
+        completion?(false)
     }
 
     /// Видео — ±10 секунд, музыка — следующий/предыдущий трек.
@@ -296,7 +356,7 @@ final class NowPlayingService {
             browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL)
             scheduleRefresh()
         case .system:
-            bridge.send("seek \(value)")
+            if candidates[item.id]?.isLive != false { bridge.send("seek \(value)") }
         }
     }
 
@@ -379,6 +439,8 @@ final class NowPlayingService {
         switch target {
         case .music?, .spotify?:
             runner.run("tell application id \"\(target?.bundleID ?? "")\" to \(command.appleScript)")
+        case .system(let bundleID)? where candidates[target!]?.isLive == false:
+            sendToRemembered(command, bundleID: bundleID, tabURL: candidates[target!]?.tabURL)
         case .system?:
             bridge.send(command.bridgeCommand)
         case .browser(let kind)?:
@@ -400,22 +462,19 @@ final class NowPlayingService {
         scheduleRefresh()
     }
 
-    private func pause(_ target: PlayerSource) {
-        if var candidate = candidates[target], candidate.isPlaying {
-            let now = Date()
-            candidate.elapsed += now.timeIntervalSince(candidate.elapsedTimestamp)
-            candidate.elapsedTimestamp = now
-            candidate.isPlaying = false
-            candidates[target] = candidate
-        }
-        if isDemo { return }
-        switch target {
-        case .music, .spotify:
-            runner.run("tell application id \"\(target.bundleID)\" to pause")
-        case .system:
-            bridge.send("pause")
-        case .browser(let kind):
-            browser.perform(.pause, in: kind, url: candidates[target]?.tabURL)
+    /// Команда источнику, который сейчас не «главный» в системе: адресуем его напрямую.
+    private func sendToRemembered(_ command: MediaCommand, bundleID: String, tabURL: String?) {
+        if let kind = BrowserKind.allCases.first(where: { $0.bundleID == bundleID }) {
+            if command == .toggle {
+                browser.perform(.toggle, in: kind, url: tabURL)
+            } else {
+                browser.focusTab(in: kind, title: "", url: tabURL)
+            }
+        } else if bundleID == PlayerSource.music.bundleID || bundleID == PlayerSource.spotify.bundleID {
+            runner.run("tell application id \"\(bundleID)\" to \(command.appleScript)")
+        } else {
+            // Приложение без скриптов: выводим его вперёд — дальше система сама сделает его главным.
+            openApp(bundleID: bundleID)
         }
     }
 
@@ -440,6 +499,19 @@ final class NowPlayingService {
         pid: pid_t? = nil
     ) -> Bool {
         let now = Date()
+        var playing = playing
+        var position = position
+        var timestamp = timestamp
+        if let hold = pending[source] {
+            if hold.until < now || hold.playing == playing {
+                pending[source] = nil
+            } else if let current = candidates[source] {
+                // Плеер ещё не успел выполнить команду — оставляем то, что нажал пользователь.
+                playing = hold.playing
+                position = current.elapsed
+                timestamp = current.elapsedTimestamp
+            }
+        }
         var candidate = candidates[source] ?? MediaCandidate(
             source: source,
             track: newTrack,
@@ -453,6 +525,7 @@ final class NowPlayingService {
             candidate.lastActivity = now
         }
         candidate.track = newTrack
+        candidate.lastUpdate = now
         candidate.isPlaying = playing
         candidate.elapsed = position
         candidate.elapsedTimestamp = timestamp
@@ -483,13 +556,20 @@ final class NowPlayingService {
     /// Выбирает, что показать, и обновляет наблюдаемые свойства (только если что-то изменилось).
     private func recompute() {
         // Системный «Что играет» уже знает про Музыку/Spotify — не показываем их дважды.
-        let systemBundles = Set(candidates.keys.compactMap { key -> String? in
-            if case .system(let id) = key { return id }
+        // Запомненный системный источник уступает точному (вкладка браузера, AppleScript).
+        let liveSystemBundles = Set(candidates.values.compactMap { candidate -> String? in
+            if case .system(let id) = candidate.source, candidate.isLive { return id }
             return nil
         })
+        let directBundles = Set(candidates.keys.compactMap { key -> String? in
+            if case .system = key { return nil }
+            return key.bundleID
+        })
         let visible = candidates.values.filter { candidate in
-            if case .system = candidate.source { return true }
-            return !systemBundles.contains(candidate.source.bundleID)
+            if case .system(let id) = candidate.source {
+                return candidate.isLive || !directBundles.contains(id)
+            }
+            return !liveSystemBundles.contains(candidate.source.bundleID)
         }
         let latest: (MediaCandidate, MediaCandidate) -> Bool = { $0.lastActivity < $1.lastActivity }
         let chosen = visible.filter(\.isPlaying).max(by: latest) ?? visible.max(by: latest)
@@ -586,7 +666,7 @@ final class NowPlayingService {
             if let cached = accentCache[key] {
                 accent = cached
             } else {
-                accent = artwork.vibrantAverageColor ?? .white
+                accent = artwork.averageAccentColor ?? .white
                 accentCache[key] = accent
             }
             if backdropCache.count > 24 { backdropCache.removeAll(); accentCache.removeAll() }
@@ -612,7 +692,7 @@ final class NowPlayingService {
 
     private func applyArtwork(_ image: NSImage?) {
         artwork = image
-        let color = image?.vibrantAverageColor ?? .white
+        let color = image?.averageAccentColor ?? .white
         if color != accentNSColor {
             accentNSColor = color
             accent = Color(nsColor: color)
@@ -665,11 +745,15 @@ final class NowPlayingService {
         }
         // Браузер не умеет присылать уведомления, поэтому опрашиваем его (если включено).
         // Если системный «Что играет» уже видит браузер — вкладки опрашивать не нужно.
-        let systemSeesBrowser = candidates.keys.contains { key in
-            if case .system = key { return key.browserKind != nil }
+        let systemSeesBrowser = candidates.values.contains { candidate in
+            if case .system = candidate.source { return candidate.isLive && candidate.source.browserKind != nil }
             return false
         }
         if !systemSeesBrowser { pollBrowsers() }
+
+        // Запомненные источники держим полчаса после последней активности.
+        let stale = candidates.values.filter { !$0.isLive && Date().timeIntervalSince($0.lastActivity) > 30 * 60 }
+        stale.map(\.source).forEach(removeCandidate)
     }
 
     private func refresh(_ player: PlayerSource) {
@@ -755,13 +839,28 @@ final class NowPlayingService {
             systemSources.forEach(removeCandidate)
         case .info(let info):
             guard !info.isEmpty else {
-                systemSources.forEach(removeCandidate)
+                // Источник закрылся (вкладка, плеер) — убираем только живой, запомненные оставляем.
+                systemSources.filter { candidates[$0]?.isLive != false }.forEach(removeCandidate)
                 return
             }
             let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid) : nil
-            let source = PlayerSource.system(app?.bundleIdentifier ?? "")
-            // Системный источник всегда один — убираем прежний, если сменилось приложение.
-            for old in systemSources where old != source { candidates.removeValue(forKey: old) }
+            var bundleID = app?.bundleIdentifier ?? ""
+            // Звук из Safari иногда приходит от процесса WebKit — это всё равно Safari.
+            if bundleID.hasPrefix("com.apple.WebKit") { bundleID = BrowserKind.safari.bundleID }
+            let source = PlayerSource.system(bundleID)
+            // Система сообщает только одно приложение. Прежнее не выкидываем, а запоминаем.
+            // Состояние не трогаем сразу: macOS иногда «прыгает» между двумя плеерами, и
+            // мгновенная пауза заставляла карточки мигать. Если источник так и не вернулся —
+            // через пару секунд считаем его на паузе (см. settleRemembered).
+            var switched = false
+            for old in systemSources where old != source {
+                guard var previous = candidates[old], previous.isLive else { continue }
+                previous.isLive = false
+                candidates[old] = previous
+                switched = true
+            }
+            candidates[source]?.isLive = true
+            if switched { scheduleSettle() }
 
             let key = "system|\(info.title)|\(info.artist)|\(info.album)"
             let artworkChanged = upsert(
@@ -787,6 +886,32 @@ final class NowPlayingService {
             }
             recompute()
         }
+    }
+
+    private func scheduleSettle() {
+        settleTask?.cancel()
+        settleTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3.5))
+            guard !Task.isCancelled else { return }
+            self?.settleRemembered()
+        }
+    }
+
+    /// Запомненный источник, от которого давно нет вестей, показываем на паузе.
+    private func settleRemembered() {
+        let now = Date()
+        var changed = false
+        for (source, candidate) in candidates where !candidate.isLive && candidate.isPlaying {
+            guard now.timeIntervalSince(candidate.lastUpdate) > 3 else { continue }
+            var paused = candidate
+            let value = paused.elapsed + now.timeIntervalSince(paused.elapsedTimestamp)
+            paused.elapsed = paused.track.duration > 0 ? min(value, paused.track.duration) : value
+            paused.elapsedTimestamp = now
+            paused.isPlaying = false
+            candidates[source] = paused
+            changed = true
+        }
+        if changed { recompute() }
     }
 
     private func appTerminated(_ bundleID: String?) {
@@ -913,34 +1038,51 @@ final class DistributedObserver: NSObject {
 }
 
 extension NSImage {
-    /// Средний цвет картинки, сделанный посочнее — для подсветки и эквалайзера.
-    var vibrantAverageColor: NSColor? {
+    /// Усреднённый цвет обложки для эквалайзера и подсветки. Оттенок честный (без «накрутки»
+    /// насыщенности, из-за которой тёплые обложки становились красными), только чуть светлее,
+    /// чтобы на чёрном было видно. Серые обложки дают мягкий белый.
+    var averageAccentColor: NSColor? {
         guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        var pixel = [UInt8](repeating: 0, count: 4)
-        let drawn: Bool = pixel.withUnsafeMutableBytes { buffer in
+        let side = 24
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn: Bool = pixels.withUnsafeMutableBytes { buffer in
             guard let context = CGContext(
                 data: buffer.baseAddress,
-                width: 1,
-                height: 1,
+                width: side,
+                height: side,
                 bitsPerComponent: 8,
-                bytesPerRow: 4,
-                space: CGColorSpaceCreateDeviceRGB(),
+                bytesPerRow: side * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
             ) else { return false }
-            context.interpolationQuality = .medium
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+            context.interpolationQuality = .high
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
             return true
         }
         guard drawn else { return nil }
-        let base = NSColor(
-            srgbRed: CGFloat(pixel[0]) / 255,
-            green: CGFloat(pixel[1]) / 255,
-            blue: CGFloat(pixel[2]) / 255,
-            alpha: 1
-        )
+
+        // Среднее по пикселям; почти чёрные и почти белые (фон, поля) весят меньше.
+        var red = 0.0, green = 0.0, blue = 0.0, total = 0.0
+        for index in stride(from: 0, to: pixels.count, by: 4) {
+            let r = Double(pixels[index]) / 255, g = Double(pixels[index + 1]) / 255, b = Double(pixels[index + 2]) / 255
+            let maxValue = max(r, g, b), minValue = min(r, g, b)
+            let chroma = maxValue - minValue
+            let weight = 0.25 + chroma + (maxValue < 0.12 || minValue > 0.92 ? 0 : 0.35)
+            red += r * weight
+            green += g * weight
+            blue += b * weight
+            total += weight
+        }
+        guard total > 0 else { return nil }
+        let base = NSColor(srgbRed: red / total, green: green / total, blue: blue / total, alpha: 1)
         var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
         base.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
-        if saturation < 0.12 { return NSColor(white: 0.92, alpha: 1) }
-        return NSColor(hue: hue, saturation: max(saturation, 0.55), brightness: max(brightness, 0.85), alpha: 1)
+        if saturation < 0.14 { return NSColor(white: 0.9, alpha: 1) }
+        return NSColor(
+            hue: hue,
+            saturation: min(saturation * 1.1, 0.75),
+            brightness: max(brightness, 0.82),
+            alpha: 1
+        )
     }
 }

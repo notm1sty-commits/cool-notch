@@ -1,7 +1,7 @@
 import AppKit
 import Observation
 
-/// История текстового буфера обмена (только в памяти, пароли пропускаем).
+/// История буфера обмена: тексты, картинки и новые скриншоты (только в памяти, пароли пропускаем).
 @MainActor
 @Observable
 final class ClipboardService {
@@ -10,6 +10,15 @@ final class ClipboardService {
         let text: String
         let date: Date
         let appName: String?
+        var image: NSImage?
+        /// Файл скриншота на диске (можно перетащить или открыть).
+        var fileURL: URL?
+
+        var isImage: Bool { image != nil }
+
+        static func == (lhs: Entry, rhs: Entry) -> Bool {
+            lhs.id == rhs.id && lhs.text == rhs.text && lhs.image === rhs.image && lhs.fileURL == rhs.fileURL
+        }
     }
 
     private(set) var entries: [Entry] = []
@@ -18,7 +27,14 @@ final class ClipboardService {
     private let pasteboard = NSPasteboard.general
     @ObservationIgnored private var lastChangeCount: Int
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var folderSource: DispatchSourceFileSystemObject?
+    @ObservationIgnored private var watchedFolder: URL?
+    @ObservationIgnored private var knownScreenshots: Set<String> = []
+    @ObservationIgnored private var pollTicks = 0
+    /// Папка, для которой уже запомнили «что было до нас» (старые скриншоты в историю не тащим).
+    @ObservationIgnored private var baselineFolder: URL?
     private let limit = 30
+    private let imageLimit = 12
 
     private static let ignoredTypes: Set<String> = [
         "org.nspasteboard.ConcealedType",
@@ -35,14 +51,24 @@ final class ClipboardService {
         timer = Timer.coalesced(interval: 1.0, tolerance: 0.4) { [weak self] in
             self?.poll()
         }
+        updateScreenshotWatching()
     }
 
     func copy(_ entry: Entry) {
         pasteboard.clearContents()
-        pasteboard.setString(entry.text, forType: .string)
+        if let image = entry.image {
+            var objects: [NSPasteboardWriting] = [image]
+            if let fileURL = entry.fileURL { objects.insert(fileURL as NSURL, at: 0) }
+            pasteboard.writeObjects(objects)
+        } else {
+            pasteboard.setString(entry.text, forType: .string)
+        }
         lastChangeCount = pasteboard.changeCount
         entries.removeAll { $0.id == entry.id }
-        entries.insert(Entry(text: entry.text, date: Date(), appName: entry.appName), at: 0)
+        var fresh = Entry(text: entry.text, date: Date(), appName: entry.appName)
+        fresh.image = entry.image
+        fresh.fileURL = entry.fileURL
+        entries.insert(fresh, at: 0)
     }
 
     func remove(_ entry: Entry) {
@@ -56,6 +82,12 @@ final class ClipboardService {
         }
     }
 
+    func insertDemoImage(_ image: NSImage, title: String) {
+        var entry = Entry(text: title, date: Date(), appName: "Снимок экрана")
+        entry.image = image
+        entries.insert(entry, at: 0)
+    }
+
     func clear() {
         entries.removeAll()
     }
@@ -66,6 +98,14 @@ final class ClipboardService {
         if enabled != isEnabled {
             isEnabled = enabled
             if !enabled { entries.removeAll() }
+            updateScreenshotWatching()
+        }
+        // Запасной путь для скриншотов: раз в 3 секунды сверяем папку (и переподключаемся,
+        // если раньше доступа не было), на случай если система не сообщила о новом файле.
+        pollTicks += 1
+        if pollTicks % 3 == 0, enabled, Pref.bool(Pref.screenshotsInHistory) {
+            if folderSource == nil || watchedFolder != Self.screenshotFolder { updateScreenshotWatching() }
+            scanScreenshots(delay: .zero)
         }
         guard pasteboard.changeCount != lastChangeCount else { return }
         lastChangeCount = pasteboard.changeCount
@@ -75,11 +115,145 @@ final class ClipboardService {
     private func capture() {
         let types = Set((pasteboard.types ?? []).map(\.rawValue))
         guard types.isDisjoint(with: Self.ignoredTypes) else { return }
-        guard let text = pasteboard.string(forType: .string),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        entries.removeAll { $0.text == text }
         let app = NSWorkspace.shared.frontmostApplication?.localizedName
-        entries.insert(Entry(text: text, date: Date(), appName: app), at: 0)
+
+        // Скопировали картинку-файл в Finder: в буфере имя файла и его иконка — берём сам файл.
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           let file = urls.first(where: Self.isImageFile), let image = NSImage(contentsOf: file) {
+            removeDuplicates(of: file)
+            var entry = Entry(text: file.deletingPathExtension().lastPathComponent, date: Date(), appName: app)
+            entry.image = image
+            entry.fileURL = file
+            insert(entry)
+            return
+        }
+
+        let imageTypes: Set<String> = [
+            NSPasteboard.PasteboardType.png.rawValue,
+            NSPasteboard.PasteboardType.tiff.rawValue,
+            "public.jpeg",
+            "public.heic",
+        ]
+        let hasImage = !types.isDisjoint(with: imageTypes)
+        let text = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        // Картинка из браузера («Копировать изображение») приходит вместе со ссылкой — это картинка.
+        // А текст из Pages/Word тоже несёт «картинку» самого текста — тогда это текст.
+        let textIsJustLink = !text.contains("\n") && (text.hasPrefix("http://") || text.hasPrefix("https://") || text.hasPrefix("data:"))
+        if hasImage, text.isEmpty || textIsJustLink, let image = NSImage(pasteboard: pasteboard) {
+            var entry = Entry(text: "Изображение", date: Date(), appName: app)
+            entry.image = image
+            insert(entry)
+            return
+        }
+
+        if let raw = pasteboard.string(forType: .string), !text.isEmpty {
+            entries.removeAll { $0.text == raw && !$0.isImage }
+            insert(Entry(text: raw, date: Date(), appName: app))
+        }
+    }
+
+    private static func isImageFile(_ url: URL) -> Bool {
+        ["png", "jpg", "jpeg", "heic", "tiff", "tif", "gif", "webp", "bmp"].contains(url.pathExtension.lowercased())
+    }
+
+    private func removeDuplicates(of file: URL) {
+        entries.removeAll { $0.fileURL == file }
+    }
+
+    private func insert(_ entry: Entry) {
+        entries.insert(entry, at: 0)
         if entries.count > limit { entries.removeLast(entries.count - limit) }
+        // Картинки тяжёлые — держим в памяти только последние.
+        var images = 0
+        entries = entries.filter { item in
+            guard item.isImage else { return true }
+            images += 1
+            return images <= imageLimit
+        }
+    }
+
+    // MARK: - Screenshot files
+
+    /// Папка, куда macOS сохраняет скриншоты (по умолчанию — рабочий стол).
+    nonisolated static var screenshotFolder: URL {
+        let defaults = UserDefaults(suiteName: "com.apple.screencapture")
+        if let path = defaults?.string(forKey: "location"), !path.isEmpty {
+            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop", isDirectory: true)
+    }
+
+    func updateScreenshotWatching() {
+        let wanted = isEnabled && Pref.bool(Pref.screenshotsInHistory)
+        if !wanted {
+            folderSource?.cancel()
+            folderSource = nil
+            watchedFolder = nil
+            return
+        }
+        let folder = Self.screenshotFolder
+        guard folderSource == nil || watchedFolder != folder else { return }
+        folderSource?.cancel()
+        folderSource = nil
+        watchedFolder = nil
+        let descriptor = open(folder.path, O_EVTONLY)
+        guard descriptor >= 0 else { return }  // нет доступа к папке — попробуем снова из poll()
+        if baselineFolder != folder {
+            knownScreenshots = Set(screenshotFiles(in: folder).map(\.lastPathComponent))
+            baselineFolder = folder
+        }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write], queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.scanScreenshots(delay: .milliseconds(700)) }
+        }
+        source.setCancelHandler { close(descriptor) }
+        source.resume()
+        folderSource = source
+        watchedFolder = folder
+    }
+
+    private func screenshotFiles(in folder: URL) -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.creationDateKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var prefixes = ["Снимок экрана", "Screenshot", "Screen Shot", "Скриншот"]
+        // Своё имя для скриншотов (defaults write com.apple.screencapture name …).
+        if let custom = UserDefaults(suiteName: "com.apple.screencapture")?.string(forKey: "name"), !custom.isEmpty {
+            prefixes.append(custom)
+        }
+        let extensions: Set<String> = ["png", "jpg", "jpeg", "heic", "tiff"]
+        return files.filter { url in
+            extensions.contains(url.pathExtension.lowercased())
+                && prefixes.contains { url.lastPathComponent.hasPrefix($0) }
+        }
+    }
+
+    private func scanScreenshots(delay: Duration) {
+        guard let folder = watchedFolder ?? (folderSource == nil ? Self.screenshotFolder : nil) else { return }
+        // Скриншот пишется на диск не мгновенно — проверяем чуть позже.
+        Task { @MainActor [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard let self else { return }
+            let files = self.screenshotFiles(in: folder)
+            if self.baselineFolder != folder {
+                // Первый просмотр папки — запоминаем то, что уже было, и не тащим старое.
+                self.knownScreenshots = Set(files.map(\.lastPathComponent))
+                self.baselineFolder = folder
+                return
+            }
+            for url in files where !self.knownScreenshots.contains(url.lastPathComponent) {
+                self.knownScreenshots.insert(url.lastPathComponent)
+                let created = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? Date()
+                guard Date().timeIntervalSince(created) < 120, let image = NSImage(contentsOf: url) else { continue }
+                self.removeDuplicates(of: url)
+                var entry = Entry(text: url.deletingPathExtension().lastPathComponent, date: created, appName: "Снимок экрана")
+                entry.image = image
+                entry.fileURL = url
+                self.insert(entry)
+            }
+        }
     }
 }

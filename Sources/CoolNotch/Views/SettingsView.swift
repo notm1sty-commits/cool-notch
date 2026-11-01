@@ -4,6 +4,7 @@ import SwiftUI
 
 struct SettingsView: View {
     var notifications: NotificationMirror?
+    var updates: UpdateService?
 
     @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
@@ -15,10 +16,14 @@ struct SettingsView: View {
     @AppStorage(Pref.browserMusic) var browserMusic = false
     @AppStorage(Pref.systemNowPlaying) var systemNowPlaying = true
     @AppStorage(Pref.systemNotifications) var systemNotifications = true
-    @AppStorage(Pref.notchStyle) var notchStyle = "glass"
-    @AppStorage(Pref.fxChromatic) var fxChromatic = true
+    @AppStorage(Pref.notchStyle) var notchStyle = "black"
     @AppStorage(Pref.fxEdgeGlow) var fxEdgeGlow = true
     @AppStorage(Pref.fx3D) var fx3D = true
+    @AppStorage(Pref.fxJelly) var fxJelly = true
+    @AppStorage(Pref.glassTint) var glassTint = 0.6
+    @AppStorage(Pref.screenshotsInHistory) var screenshotsInHistory = true
+    @AppStorage(Pref.autoCheckUpdates) var autoCheckUpdates = true
+    @AppStorage(Pref.betaUpdates) var betaUpdates = false
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
     @AppStorage(Pref.openOnFileDrag) var openOnFileDrag = true
     @AppStorage(Pref.timerSound) var timerSound = true
@@ -30,14 +35,20 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Оформление") {
-                Picker("Стиль раскрытой чёлки", selection: $notchStyle) {
-                    Text("Стекло").tag("glass")
+                Picker("Подложка чёлки", selection: $notchStyle) {
                     Text("Чёрная").tag("black")
+                    Text("Стекло").tag("glass")
                 }
                 .pickerStyle(.segmented)
-                Toggle("RGB-кромка при движении («3D-кино»)", isOn: $fxChromatic)
-                Toggle("Свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
-                Toggle("3D-обложки и карусель", isOn: $fx3D)
+                if notchStyle == "glass" {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Затемнение стекла: \(Int(glassTint * 100))%")
+                        Slider(value: $glassTint, in: 0.15...0.85)
+                    }
+                }
+                Toggle("Эффект желе при раскрытии", isOn: $fxJelly)
+                Toggle("Мягкое свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
+                Toggle("Объёмная карусель плеера", isOn: $fx3D)
                 Text("В режиме энергосбережения и при включённом «Уменьшить движение» эффекты упрощаются автоматически.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -113,9 +124,16 @@ struct SettingsView: View {
 
             Section("Буфер обмена") {
                 Toggle("Сохранять историю копирования", isOn: $clipboardHistory)
-                Text("История хранится только в памяти и стирается при выходе. Пароли из менеджеров паролей пропускаются.")
+                Toggle("Добавлять новые скриншоты", isOn: $screenshotsInHistory)
+                    .disabled(!clipboardHistory)
+                Text("История хранится только в памяти и стирается при выходе. Пароли из менеджеров паролей пропускаются. Скриншоты берутся из папки, куда их сохраняет macOS (обычно рабочий стол).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let updates {
+                UpdatesSection(updates: updates, autoCheck: $autoCheckUpdates, beta: $betaUpdates)
             }
 
             Section {
@@ -129,7 +147,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 500, height: 700)
+        .frame(width: 520, height: 720)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controlAccess = AXIsProcessTrusted()
         }
@@ -181,6 +199,100 @@ private struct NotificationAccessRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+}
+
+/// «Обновления»: проверка, загрузка с прогрессом и установка в один клик.
+private struct UpdatesSection: View {
+    let updates: UpdateService
+    @Binding var autoCheck: Bool
+    @Binding var beta: Bool
+
+    var body: some View {
+        Section("Обновления") {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .fontWeight(.medium)
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(isError ? Color.red : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                actionButton
+            }
+            if case .downloading(let progress) = updates.state {
+                ProgressView(value: progress)
+            } else if case .installing = updates.state {
+                ProgressView()
+                    .progressViewStyle(.linear)
+            }
+            Toggle("Проверять автоматически", isOn: $autoCheck)
+            Toggle("Тестовые сборки", isOn: $beta)
+                .onChange(of: beta) { _, _ in updates.check() }
+            Text("Свежие версии из разработки — сразу после каждого изменения, ещё до релиза. Могут быть сырыми.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: updates.state) { _, state in
+            if Pref.bool(Pref.haptics), state == .available {
+                NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButton: some View {
+        switch updates.state {
+        case .checking, .downloading, .installing:
+            ProgressView()
+                .controlSize(.small)
+        case .available:
+            Button("Обновить") { updates.install() }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+        default:
+            if updates.hasUpdate {
+                Button("Обновить") { updates.install() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+            } else {
+                Button("Проверить") { updates.check() }
+            }
+        }
+    }
+
+    private var isError: Bool {
+        if case .failed = updates.state { return true }
+        return false
+    }
+
+    private var title: String {
+        switch updates.state {
+        case .checking: return "Проверяю…"
+        case .available: return "Доступна версия \(updates.latest?.version ?? "")"
+        case .downloading(let progress): return "Загрузка… \(Int(progress * 100))%"
+        case .installing: return "Устанавливаю и перезапускаю…"
+        case .upToDate: return updates.latest == nil ? "Обновлений пока нет" : "Последняя версия"
+        case .failed: return "Не получилось обновить"
+        case .idle: return updates.hasUpdate ? "Доступна версия \(updates.latest?.version ?? "")" : "Cool Notch \(updates.currentVersion)"
+        }
+    }
+
+    private var detail: String {
+        switch updates.state {
+        case .failed(let message):
+            return message
+        case .available:
+            return "Сейчас \(updates.currentVersion). Скачаю и поставлю сам — переустанавливать ничего не нужно."
+        default:
+            if let date = updates.lastCheck {
+                return "Установлена \(updates.currentVersion) (сборка \(updates.currentBuild)) · проверено \(date.formatted(date: .omitted, time: .shortened))"
+            }
+            return "Установлена \(updates.currentVersion) (сборка \(updates.currentBuild))"
         }
     }
 }

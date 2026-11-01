@@ -18,8 +18,8 @@ struct ClipboardView: View {
             } else if clipboard.entries.isEmpty {
                 PlaceholderView(
                     icon: "doc.on.clipboard",
-                    title: "Скопируй любой текст",
-                    subtitle: "Последние 30 копирований появятся здесь. Пароли не сохраняются."
+                    title: "Скопируй текст или сделай скриншот",
+                    subtitle: "Последние копирования и снимки экрана появятся здесь. Пароли не сохраняются."
                 )
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
@@ -54,11 +54,7 @@ private struct ClipRow: View {
     var body: some View {
         Button(action: onCopy) {
             HStack(spacing: 9) {
-                Image(systemName: copied ? "checkmark" : icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(copied ? Color.green : Theme.tertiaryText)
-                    .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 16)
+                leading
                 VStack(alignment: .leading, spacing: 1) {
                     Text(preview)
                         .font(.system(size: 12, weight: .medium))
@@ -71,8 +67,9 @@ private struct ClipRow: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, entry.isImage ? 6 : 10)
+            .padding(.vertical, entry.isImage ? 4 : 7)
+            .frame(minHeight: 40)
             .glass(14, highlighted: hovering)
             .contentShape(Rectangle())
         }
@@ -80,15 +77,59 @@ private struct ClipRow: View {
         .onHover { value in
             withAnimation(Theme.micro) { hovering = value }
         }
-        .help(String(entry.text.prefix(500)))
+        .help(entry.isImage ? "Нажми, чтобы скопировать картинку, или перетащи её" : String(entry.text.prefix(500)))
+        .onDrag {
+            if let url = entry.fileURL { return NSItemProvider(contentsOf: url) ?? NSItemProvider() }
+            if let image = entry.image { return NSItemProvider(object: image) }
+            return NSItemProvider(object: entry.text as NSString)
+        }
         .contextMenu {
             Button("Скопировать", action: onCopy)
+            if let url = entry.fileURL {
+                Button("Показать в Finder") { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+            }
             Button("Удалить из истории", role: .destructive, action: onDelete)
         }
     }
 
+    @ViewBuilder
+    private var leading: some View {
+        if let image = entry.image {
+            ZStack {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 44, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5)
+                    )
+                if copied {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.black.opacity(0.45))
+                        .frame(width: 44, height: 30)
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.green)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+        } else {
+            Image(systemName: copied ? "checkmark" : icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(copied ? Color.green : Theme.tertiaryText)
+                .contentTransition(.symbolEffect(.replace))
+                .frame(width: 16)
+        }
+    }
+
     private var preview: String {
-        entry.text
+        if entry.isImage, let image = entry.image {
+            let size = image.representations.first.map { "\($0.pixelsWide)×\($0.pixelsHigh)" } ?? ""
+            return entry.fileURL == nil ? "Изображение \(size)" : "Скриншот \(size)"
+        }
+        return entry.text
             .components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -96,6 +137,7 @@ private struct ClipRow: View {
     }
 
     private var icon: String {
+        if entry.isImage { return "photo" }
         let text = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("http://") || text.hasPrefix("https://") { return "link" }
         if text.contains("@"), !text.contains(" "), text.count < 80 { return "at" }

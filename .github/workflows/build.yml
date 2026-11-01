@@ -25,9 +25,35 @@ jobs:
           xcodebuild -version
           swift --version
 
+      # Необязательно: постоянный сертификат подписи (секреты MACOS_CERT_P12 в base64 и MACOS_CERT_PASSWORD).
+      # С ним macOS не сбрасывает разрешения (Универсальный доступ, Полный доступ к диску) после обновления.
+      - name: Signing certificate
+        env:
+          CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ]; then
+            echo "Сертификата нет — подпись ad-hoc."
+            exit 0
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p ci "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          IDENTITY=$(security find-identity -p codesigning "$KEYCHAIN" | awk -F'"' '/\)/ {print $2; exit}')
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-certificate -a "$KEYCHAIN" | awk -F'"' '/"alis"/ {print $4; exit}')
+          fi
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
       - name: Build app
         env:
-          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.0' }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.3.{0}', github.run_number) }}
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
           VERSION="${VERSION#v}" ./scripts/build-app.sh
@@ -39,10 +65,42 @@ jobs:
           path: .build/app/CoolNotch.dmg
           if-no-files-found: error
 
-      - name: Publish release
+      # Каждая сборка main становится релизом — кнопка «Обновить» в приложении берёт его отсюда.
+      - name: Publish build release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }})
+          make_latest: "true"
+          generate_release_notes: true
+          files: |
+            .build/app/CoolNotch.dmg
+            .build/app/CoolNotch.zip
+
+      # Сборки из веток разработки — «тестовые» (предварительные) релизы. Их видит кнопка
+      # «Обновить», если в настройках включены «Тестовые сборки».
+      - name: Publish test build
+        if: startsWith(github.ref, 'refs/heads/claude/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }}, тестовая)
+          prerelease: true
+          make_latest: "false"
+          body: Тестовая сборка из ветки ${{ github.ref_name }} (${{ github.sha }}).
+          files: |
+            .build/app/CoolNotch.dmg
+            .build/app/CoolNotch.zip
+
+      - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          name: Cool Notch ${{ github.ref_name }} (build ${{ github.run_number }})
+          make_latest: "true"
           files: |
             .build/app/CoolNotch.dmg
             .build/app/CoolNotch.zip

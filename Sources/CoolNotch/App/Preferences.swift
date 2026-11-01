@@ -13,9 +13,14 @@ enum Pref {
     static let systemNowPlaying = "systemNowPlaying"
     static let systemNotifications = "systemNotifications"
     static let notchStyle = "notchStyle"
-    static let fxChromatic = "fxChromatic"
     static let fxEdgeGlow = "fxEdgeGlow"
     static let fx3D = "fx3D"
+    static let fxJelly = "fxJelly"
+    static let glassTint = "glassTint"
+    static let screenshotsInHistory = "screenshotsInHistory"
+    static let onboardingDone = "onboardingDone"
+    static let autoCheckUpdates = "autoCheckUpdates"
+    static let betaUpdates = "betaUpdates"
     static let clipboardHistory = "clipboardHistory"
     static let openOnFileDrag = "openOnFileDrag"
     static let timerSound = "timerSound"
@@ -34,10 +39,14 @@ enum Pref {
             browserMusic: false,
             systemNowPlaying: true,
             systemNotifications: true,
-            notchStyle: "glass",
-            fxChromatic: true,
+            notchStyle: "black",
             fxEdgeGlow: true,
             fx3D: true,
+            fxJelly: true,
+            glassTint: 0.6,
+            screenshotsInHistory: true,
+            autoCheckUpdates: true,
+            betaUpdates: false,
             clipboardHistory: true,
             openOnFileDrag: true,
             timerSound: true,
@@ -46,4 +55,5 @@ enum Pref {
 
     static func bool(_ key: String) -> Bool { UserDefaults.standard.bool(forKey: key) }
     static func double(_ key: String) -> Double { UserDefaults.standard.double(forKey: key) }
+    static func set(_ value: Any?, _ key: String) { UserDefaults.standard.set(value, forKey: key) }
 }

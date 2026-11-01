@@ -62,4 +62,11 @@ for t in 4 7 10 13 16 18 21 23 25 27 30 33 36 40 44 49 54; do
 done
 
 rm -f "$OUT/raw.mov"
+
+# Окно первого запуска (разрешения) — отдельным снимком.
+"$APP" --onboarding > "$OUT/onboarding.log" 2>&1 &
+ONB_PID=$!
+sleep 4
+screencapture -x "$OUT/onboarding.png" || true
+kill "$ONB_PID" 2>/dev/null || true
 ls -la "$OUT"

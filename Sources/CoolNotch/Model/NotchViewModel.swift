@@ -24,6 +24,8 @@ struct NotchBanner: Identifiable, Equatable {
         /// Перейти к источнику музыки/видео (плеер или вкладка браузера).
         case openSource
         case openApp(String)
+        /// Скачать и поставить обновление.
+        case installUpdate
     }
 
     enum Kind: Equatable {
@@ -97,9 +99,10 @@ final class NotchViewModel {
 
     // Оформление (зеркало настроек, чтобы интерфейс сразу реагировал)
     private(set) var glassStyle = true
-    private(set) var fxChromatic = true
     private(set) var fxEdgeGlow = true
     private(set) var fx3D = true
+    private(set) var fxJelly = true
+    private(set) var glassTint: Double = 0.6
 
     /// Свечение контура: меняется счётчик — пробегает новая волна.
     private(set) var glowTrigger = 0
@@ -117,15 +120,21 @@ final class NotchViewModel {
     let battery: BatteryService
     let shelf: ShelfStore
     let clipboard: ClipboardService
+    let notes: NotesStore
     let timer: TimerService
     let audio: AudioOutputMonitor
     let notifications: NotificationMirror
+    let updates: UpdateService
 
     // MARK: Plumbing
 
     @ObservationIgnored var windowFrame: CGRect = .zero
     @ObservationIgnored var onClose: (@MainActor () -> Void)?
     @ObservationIgnored var openSettings: (@MainActor () -> Void)?
+    /// Разовые эффекты оболочки (свечение, блик) — их рисует Core Animation.
+    @ObservationIgnored var onChromeEvent: (@MainActor (ChromeEvent) -> Void)?
+    /// Попросить окно принять ввод с клавиатуры (заметки, таймер).
+    @ObservationIgnored var onRequestKeyboard: (@MainActor () -> Void)?
     @ObservationIgnored private var isPinned = false
     @ObservationIgnored private var openTask: Task<Void, Never>?
     @ObservationIgnored private var closeTask: Task<Void, Never>?
@@ -136,6 +145,7 @@ final class NotchViewModel {
     @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
     @ObservationIgnored private var lastPresentationKind = 0
     @ObservationIgnored private var lastHovering = false
+    @ObservationIgnored private var browserHintShown: Set<BrowserKind> = []
 
     init() {
         motion = NotchMotion()
@@ -143,9 +153,22 @@ final class NotchViewModel {
         battery = BatteryService()
         shelf = ShelfStore()
         clipboard = ClipboardService()
+        notes = NotesStore()
         timer = TimerService()
         audio = AudioOutputMonitor()
         notifications = NotificationMirror()
+        updates = UpdateService()
+
+        updates.onUpdateFound = { [weak self] release in
+            self?.post(NotchBanner(
+                icon: .symbol("arrow.down.circle.fill"),
+                tint: .green,
+                title: "Доступно обновление \(release.version)",
+                subtitle: "Нажми, чтобы установить — приложение перезапустится само",
+                duration: 7,
+                action: .installUpdate
+            ))
+        }
 
         battery.onPluggedIn = { [weak self] in
             guard Pref.bool(Pref.showChargingActivity) else { return }
@@ -168,6 +191,21 @@ final class NotchViewModel {
                 title: "Таймер завершён",
                 subtitle: minutes > 0 ? "Прошло \(minutes) мин" : nil,
                 duration: 6
+            ))
+        }
+        nowPlaying.onBrowserControlUnavailable = { [weak self] kind in
+            guard let self, !self.browserHintShown.contains(kind) else { return }
+            self.browserHintShown.insert(kind)
+            let menu = kind == .safari
+                ? "меню «Разработка» → «Разрешить JavaScript из Apple Events»"
+                : "меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events»"
+            self.post(NotchBanner(
+                icon: .app(kind.bundleID),
+                tint: .white,
+                title: "Открыл вкладку — нажми там ⏯",
+                subtitle: "Чтобы управлять видео прямо из чёлки, пока играет музыка, включи в браузере \(menu).",
+                duration: 8,
+                expanded: true
             ))
         }
         nowPlaying.onTrackChange = { [weak self] track in
@@ -217,12 +255,44 @@ final class NotchViewModel {
     func reloadPrefs() {
         let glass = UserDefaults.standard.string(forKey: Pref.notchStyle) != "black"
         if glass != glassStyle { glassStyle = glass }
-        let chromatic = Pref.bool(Pref.fxChromatic)
-        if chromatic != fxChromatic { fxChromatic = chromatic }
         let edge = Pref.bool(Pref.fxEdgeGlow)
         if edge != fxEdgeGlow { fxEdgeGlow = edge }
         let depth = Pref.bool(Pref.fx3D)
         if depth != fx3D { fx3D = depth }
+        let jelly = Pref.bool(Pref.fxJelly)
+        if jelly != fxJelly { fxJelly = jelly }
+        let tint = min(max(Pref.double(Pref.glassTint), 0.05), 0.9)
+        if tint != glassTint { glassTint = tint }
+    }
+
+    /// Что сейчас должна показывать «оболочка» на Core Animation.
+    var chromeState: ChromeState {
+        let reduced = lowPower || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        return ChromeState(
+            lifted: presentation != .closed,
+            open: isOpen,
+            glassStyle: glassStyle,
+            glassTint: CGFloat(glassTint),
+            edgeEffects: fxEdgeGlow && !reduced,
+            jelly: fxJelly && !reduced,
+            notchSize: notchSize
+        )
+    }
+
+    func requestKeyboard() {
+        onRequestKeyboard?()
+    }
+
+    /// Пока пользователь печатает (заметка, время таймера), чёлка не сворачивается от ухода курсора.
+    @ObservationIgnored private(set) var isTyping = false
+
+    func beginTyping() {
+        isTyping = true
+        onRequestKeyboard?()
+    }
+
+    func endTyping() {
+        isTyping = false
     }
 
     /// Стекло видно, когда чёлка раскрыта или показывает уведомление.
@@ -233,15 +303,10 @@ final class NotchViewModel {
     func glow(green: Bool) {
         glowGreen = green
         glowTrigger += 1
+        onChromeEvent?(.glow(green: green))
     }
 
     // MARK: Media deck
-
-    var selectedItem: MediaItem? {
-        let items = nowPlaying.items
-        guard !items.isEmpty else { return nil }
-        return items[min(max(deckIndex, 0), items.count - 1)]
-    }
 
     func selectDeck(_ index: Int) {
         let clamped = min(max(index, 0), max(nowPlaying.items.count - 1, 0))
@@ -351,8 +416,8 @@ final class NotchViewModel {
 
     var topRadius: CGFloat {
         switch presentation {
-        case .open: return glassStyle ? 0 : 14
-        case .banner: return glassStyle ? 0 : 10
+        case .open: return 14
+        case .banner: return 10
         case .closed: return 6
         }
     }
@@ -469,6 +534,7 @@ final class NotchViewModel {
         closeTask = nil
         guard isOpen else { return }
         isOpen = false
+        isTyping = false
         isDropTargeted = false
         onClose?()
     }
@@ -532,6 +598,9 @@ final class NotchViewModel {
             open(pinned: true)
         case .openSource:
             nowPlaying.openSourceApp()
+        case .installUpdate:
+            updates.install()
+            openSettings?()
         case .openApp(let bundleID):
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
                 app.activate()

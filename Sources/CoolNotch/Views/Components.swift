@@ -40,44 +40,49 @@ struct ArtworkView: View {
 
 /// Эквалайзер на Core Animation: анимацию крутит системный рендер-сервер,
 /// приложение при этом не просыпается каждый кадр — это заметно экономит батарею.
+/// Столбики-капсулы «дышат» от центра по неповторяющимся траекториям, как живой звук.
 struct EqualizerView: NSViewRepresentable {
     var color: NSColor
     var isPlaying: Bool
-    var animated: Bool = true
+    /// В режиме энергосбережения анимация остаётся, но с меньшей частотой кадров.
+    var lowPower = false
 
     func makeNSView(context: Context) -> EqualizerNSView {
         EqualizerNSView(frame: .zero)
     }
 
     func updateNSView(_ view: EqualizerNSView, context: Context) {
-        view.update(color: color, isPlaying: isPlaying && animated)
+        view.update(color: color, isPlaying: isPlaying, lowPower: lowPower)
     }
 }
 
 final class EqualizerNSView: NSView {
     private let barCount = 4
-    private let barWidth: CGFloat = 3
-    private let spacing: CGFloat = 2.5
     private var bars: [CALayer] = []
     private var color: NSColor = .white
     private var isPlaying = false
+    private var lowPower = false
 
-    private static let durations: [CFTimeInterval] = [0.46, 0.58, 0.39, 0.52]
-    private static let lows: [CGFloat] = [0.3, 0.22, 0.38, 0.26]
-    private static let restScale: CGFloat = 0.24
+    /// Траектории высоты каждого столбика (первая точка = последней, чтобы цикл был бесшовным).
+    private static let paths: [[CGFloat]] = [
+        [0.38, 0.92, 0.52, 1.0, 0.42, 0.78, 0.38],
+        [0.66, 0.34, 1.0, 0.56, 0.88, 0.3, 0.66],
+        [0.46, 1.0, 0.36, 0.82, 0.5, 0.96, 0.46],
+        [0.82, 0.42, 0.72, 0.32, 1.0, 0.56, 0.82],
+    ]
+    private static let durations: [CFTimeInterval] = [1.55, 1.3, 1.7, 1.45]
+    private static let restScale: CGFloat = 0.28
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.masksToBounds = false
         bars = (0..<barCount).map { _ in
             let bar = CALayer()
-            bar.cornerRadius = barWidth / 2
             bar.backgroundColor = NSColor.white.cgColor
             bar.transform = CATransform3DMakeScale(1, Self.restScale, 1)
-            layer?.addSublayer(bar)
             return bar
         }
+        attachBars()
     }
 
     required init?(coder: NSCoder) {
@@ -87,43 +92,87 @@ final class EqualizerNSView: NSView {
     // Не перехватываем клики.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    override func layout() {
-        super.layout()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        let total = CGFloat(barCount) * barWidth + CGFloat(barCount - 1) * spacing
-        var x = (bounds.width - total) / 2
-        for bar in bars {
-            bar.bounds = CGRect(x: 0, y: 0, width: barWidth, height: bounds.height)
-            bar.position = CGPoint(x: x + barWidth / 2, y: bounds.midY)
-            x += barWidth + spacing
+    /// macOS может пересоздать слой вью при переносе в окно — тогда столбики и их анимации
+    /// нужно вернуть на место, иначе эквалайзер «замирает».
+    private func attachBars() {
+        guard let root = layer else { return }
+        root.masksToBounds = false
+        for bar in bars where bar.superlayer !== root {
+            bar.removeFromSuperlayer()
+            root.addSublayer(bar)
         }
-        CATransaction.commit()
     }
 
-    func update(color: NSColor, isPlaying: Bool) {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachBars()
+        applyAnimations(force: true)
+    }
+
+    override func layout() {
+        super.layout()
+        attachBars()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // Ширина столбиков подстраивается под место: 4 капсулы с зазором в 0,7 ширины.
+        let width = max(2, min(3.2, bounds.width / (CGFloat(barCount) * 1.7)))
+        let spacing = width * 0.7
+        let total = CGFloat(barCount) * width + CGFloat(barCount - 1) * spacing
+        var x = (bounds.width - total) / 2
+        for bar in bars {
+            bar.cornerRadius = width / 2
+            bar.bounds = CGRect(x: 0, y: 0, width: width, height: bounds.height)
+            bar.position = CGPoint(x: x + width / 2, y: bounds.midY)
+            x += width + spacing
+        }
+        CATransaction.commit()
+        applyAnimations(force: false)
+    }
+
+    func update(color: NSColor, isPlaying: Bool, lowPower: Bool) {
         if color != self.color {
             self.color = color
-            for bar in bars { bar.backgroundColor = color.cgColor }  // плавная смена цвета (неявная анимация)
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.6)
+            for bar in bars { bar.backgroundColor = color.cgColor }  // плавная смена цвета
+            CATransaction.commit()
         }
-        guard isPlaying != self.isPlaying else { return }
+        let changed = isPlaying != self.isPlaying || lowPower != self.lowPower
         self.isPlaying = isPlaying
+        self.lowPower = lowPower
+        applyAnimations(force: changed)
+    }
+
+    /// Ставит или снимает анимацию. Без `force` только чинит пропавшие анимации.
+    private func applyAnimations(force: Bool) {
         for (index, bar) in bars.enumerated() {
-            bar.removeAnimation(forKey: "eq")
+            let running = bar.animation(forKey: "eq") != nil
             if isPlaying {
+                guard force || !running else { continue }
+                bar.removeAnimation(forKey: "eq")
                 bar.transform = CATransform3DIdentity
-                let animation = CABasicAnimation(keyPath: "transform.scale.y")
-                animation.fromValue = Self.lows[index % Self.lows.count]
-                animation.toValue = 1.0
+                let animation = CAKeyframeAnimation(keyPath: "transform.scale.y")
+                animation.values = Self.paths[index % Self.paths.count]
+                animation.calculationMode = .cubic
                 animation.duration = Self.durations[index % Self.durations.count]
-                animation.autoreverses = true
                 animation.repeatCount = .infinity
-                animation.timeOffset = Double(index) * 0.17
-                animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                animation.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
+                animation.timeOffset = Double(index) * 0.23
+                animation.isRemovedOnCompletion = false
+                animation.preferredFrameRateRange = lowPower
+                    ? CAFrameRateRange(minimum: 10, maximum: 15, preferred: 15)
+                    : CAFrameRateRange(minimum: 20, maximum: 30, preferred: 30)
                 bar.add(animation, forKey: "eq")
-            } else {
+            } else if running || force {
+                // Плавно опускаем столбики из текущего положения, без рывка.
+                let current = bar.presentation()?.value(forKeyPath: "transform.scale.y") as? CGFloat ?? Self.restScale
+                bar.removeAnimation(forKey: "eq")
+                let settle = CABasicAnimation(keyPath: "transform.scale.y")
+                settle.fromValue = current
+                settle.toValue = Self.restScale
+                settle.duration = 0.35
+                settle.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 bar.transform = CATransform3DMakeScale(1, Self.restScale, 1)
+                bar.add(settle, forKey: "settle")
             }
         }
     }

@@ -5,7 +5,7 @@ struct ClosedNotchView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
-        let ear = max(0, (vm.motion.width - vm.notchSize.width) / 2)
+        let ear = max(0, (vm.closedSize.width - vm.notchSize.width) / 2)
         HStack(spacing: 0) {
             ZStack { leading }
                 .frame(width: ear, height: vm.notchSize.height)
@@ -21,7 +21,7 @@ struct ClosedNotchView: View {
     }
 
     private var earTransition: some Transition {
-        RevealTransition(blur: vm.lowPower ? 0 : 5, scale: 0.55, offset: .zero)
+        RevealTransition(scale: 0.55, offset: .zero)
     }
 
     @ViewBuilder
@@ -51,7 +51,7 @@ struct ClosedNotchView: View {
             EqualizerView(
                 color: vm.nowPlaying.accentNSColor,
                 isPlaying: vm.nowPlaying.isPlaying,
-                animated: !vm.lowPower
+                lowPower: vm.lowPower
             )
             .frame(width: 22, height: 14)
             .transition(earTransition)
@@ -179,7 +179,7 @@ struct BannerView: View {
                     EqualizerView(
                         color: vm.nowPlaying.accentNSColor,
                         isPlaying: vm.nowPlaying.isPlaying,
-                        animated: !vm.lowPower
+                        lowPower: vm.lowPower
                     )
                     .frame(width: 22, height: 14)
                 }
