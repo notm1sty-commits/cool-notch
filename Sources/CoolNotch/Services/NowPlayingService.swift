@@ -106,6 +106,12 @@ private struct MediaCandidate {
     var lastUpdate = Date()
 }
 
+private struct ArtworkLook {
+    let image: NSImage
+    let accent: NSColor
+    let backdrop: NSImage?
+}
+
 /// Команда, которую только что отдал пользователь: пока источник не подтвердил её,
 /// не даём старым данным «переключить» карточку обратно (иначе она мигает).
 private struct PendingPlayback {
@@ -201,8 +207,10 @@ final class NowPlayingService {
     @ObservationIgnored private var pollTimer: Timer?
     @ObservationIgnored private let launchDate = Date()
     @ObservationIgnored private var iconCache: [String: NSImage] = [:]
-    @ObservationIgnored private var backdropCache: [ObjectIdentifier: NSImage] = [:]
-    @ObservationIgnored private var accentCache: [ObjectIdentifier: NSColor] = [:]
+    /// Цвет и размытый фон для каждой обложки — считаются один раз и общие для свёрнутой
+    /// и раскрытой чёлки. Кэш держит саму картинку, поэтому её адрес не может достаться
+    /// новой обложке (раньше из-за этого цвет эквалайзера иногда был от другого трека).
+    @ObservationIgnored private var looks: [ObjectIdentifier: ArtworkLook] = [:]
 
     init() {
         runner = AppleScriptRunner()
@@ -773,24 +781,9 @@ final class NowPlayingService {
             }
         }
 
-        var backdrop: NSImage?
-        var accent = NSColor.white
-        if let artwork = candidate.artwork {
-            let key = ObjectIdentifier(artwork)
-            if let cached = backdropCache[key] {
-                backdrop = cached
-            } else if let made = ArtworkProcessing.backdrop(from: artwork) {
-                backdropCache[key] = made
-                backdrop = made
-            }
-            if let cached = accentCache[key] {
-                accent = cached
-            } else {
-                accent = artwork.averageAccentColor ?? .white
-                accentCache[key] = accent
-            }
-            if backdropCache.count > 24 { backdropCache.removeAll(); accentCache.removeAll() }
-        }
+        let look = candidate.artwork.map(look(for:))
+        let backdrop = look?.backdrop
+        let accent = look?.accent ?? .white
 
         let subtitle = [candidate.track.artist, candidate.track.album].filter { !$0.isEmpty }.joined(separator: " — ")
         return MediaItem(
@@ -810,9 +803,22 @@ final class NowPlayingService {
         )
     }
 
+    private func look(for image: NSImage) -> ArtworkLook {
+        let key = ObjectIdentifier(image)
+        if let cached = looks[key], cached.image === image { return cached }
+        if looks.count > 24 { looks.removeAll() }
+        let look = ArtworkLook(
+            image: image,
+            accent: image.averageAccentColor ?? .white,
+            backdrop: ArtworkProcessing.backdrop(from: image)
+        )
+        looks[key] = look
+        return look
+    }
+
     private func applyArtwork(_ image: NSImage?) {
         artwork = image
-        let color = image?.averageAccentColor ?? .white
+        let color = image.map { look(for: $0).accent } ?? .white
         if color != accentNSColor {
             accentNSColor = color
             accent = Color(nsColor: color)
