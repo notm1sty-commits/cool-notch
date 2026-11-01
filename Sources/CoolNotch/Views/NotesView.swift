@@ -43,8 +43,11 @@ struct NotesView: View {
                     PlaceholderView(
                         icon: "note.text",
                         title: "Пока пусто",
-                        subtitle: "Напиши заметку внизу и нажми ↑ или Enter"
+                        subtitle: "Напиши заметку внизу и нажми ↑ или Enter",
+                        layout: .horizontal
                     )
+                    // Поле ввода снизу визуально «тянет» вниз — поднимаем, чтобы выглядело по центру.
+                    .padding(.bottom, 16)
                     .transition(.opacity)
                 } else {
                     list(store: store)

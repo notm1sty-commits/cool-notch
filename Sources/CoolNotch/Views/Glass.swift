@@ -8,12 +8,14 @@ struct GlassSurface: ViewModifier {
     var radius: CGFloat
     var highlighted = false
     var tint: Color = .white
+    /// Подсветка при наведении в полтора раза слабее обычной.
+    var soft = false
 
     func body(content: Content) -> some View {
         content.background {
             let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
             shape
-                .fill(tint.opacity(highlighted ? 0.12 : 0.07))
+                .fill(tint.opacity(highlighted ? (soft ? 0.103 : 0.12) : 0.07))
                 .overlay {
                     shape.strokeBorder(Color.white.opacity(0.06), lineWidth: 0.5)
                 }
@@ -22,8 +24,8 @@ struct GlassSurface: ViewModifier {
 }
 
 extension View {
-    func glass(_ radius: CGFloat, highlighted: Bool = false, tint: Color = .white) -> some View {
-        modifier(GlassSurface(radius: radius, highlighted: highlighted, tint: tint))
+    func glass(_ radius: CGFloat, highlighted: Bool = false, tint: Color = .white, soft: Bool = false) -> some View {
+        modifier(GlassSurface(radius: radius, highlighted: highlighted, tint: tint, soft: soft))
     }
 }
 

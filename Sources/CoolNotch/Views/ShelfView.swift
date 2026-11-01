@@ -41,7 +41,7 @@ struct ShelfView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .glass(Theme.cardRadius, highlighted: vm.isDropTargeted || hovering)
+            .glass(Theme.cardRadius, highlighted: vm.isDropTargeted || hovering, soft: true)
             .onHover { inside in withAnimation(Theme.micro) { hovering = inside } }
             .animation(Theme.content, value: shelf.items)
             .animation(Theme.micro, value: vm.isDropTargeted)
@@ -58,14 +58,15 @@ private struct DropHint: View {
         ZStack {
             RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .strokeBorder(
-                    Color.white.opacity(active ? 0.55 : (hovering ? 0.28 : 0.14)),
+                    Color.white.opacity(active ? 0.55 : (hovering ? 0.23 : 0.14)),
                     style: StrokeStyle(lineWidth: 1, dash: [5, 5])
                 )
                 .padding(0.5)
             PlaceholderView(
                 title: active ? "Отпускай" : (hovering ? "Нажми, чтобы выбрать файлы" : "Перетащи файлы на чёлку"),
                 subtitle: hovering && !active ? "или перетащи их сюда — подождут, пока не понадобятся" : "Они подождут здесь, пока не понадобятся",
-                fill: .white.opacity(active || hovering ? 0.16 : 0.08)
+                fill: .white.opacity(active ? 0.16 : (hovering ? 0.13 : 0.08)),
+                layout: .horizontal
             ) {
                 Image(systemName: active ? "tray.and.arrow.down.fill" : (hovering ? "plus" : "tray"))
                     .font(.system(size: 16, weight: hovering && !active ? .semibold : .medium))
@@ -115,18 +116,29 @@ private struct AirDropZone: View {
 
     var body: some View {
         let hasItems = !vm.shelf.items.isEmpty
+        // Без файлов на полке при наведении — плюсик: нажми и выбери, что отправить.
+        let picking = hovering && !hasItems && !targeted
         PlaceholderView(
             title: "AirDrop",
-            subtitle: targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми — отправлю всё" : "Брось файл сюда"),
-            fill: Color(red: 0.12, green: 0.5, blue: 1)
+            subtitle: targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми — отправлю всё" : (picking ? "Выбрать файл" : "Брось файл сюда")),
+            fill: Color(red: 0.12, green: 0.5, blue: 1),
+            layout: .vertical
         ) {
-            AirDropGlyph()
+            ZStack {
+                AirDropGlyph()
+                    .opacity(picking ? 0 : 1)
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .opacity(picking ? 1 : 0)
+            }
         }
-        .scaleEffect(targeted ? 1.06 : (hovering && hasItems ? 1.03 : 1))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .glass(Theme.cardRadius, highlighted: targeted || (hovering && hasItems), tint: targeted ? Color(red: 0.35, green: 0.68, blue: 1) : .white)
+        .glass(Theme.cardRadius, highlighted: targeted || hovering, tint: targeted ? Color(red: 0.35, green: 0.68, blue: 1) : .white, soft: true)
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
-        .onTapGesture { if hasItems { vm.shelf.airDropAll() } }
+        .onTapGesture {
+            if hasItems { vm.shelf.airDropAll() } else { vm.pickFilesForAirDrop() }
+        }
         .onHover { hovering = $0 }
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             vm.handleAirDrop(providers)

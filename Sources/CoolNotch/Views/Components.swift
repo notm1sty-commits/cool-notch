@@ -267,34 +267,60 @@ struct CapsuleButton: View {
 
 /// Пустое состояние: иконка в круглой подложке, заголовок и подпись. Одна раскладка на всё
 /// приложение — заметки, буфер, полка и AirDrop выглядят одинаково.
+enum PlaceholderLayout {
+    /// Столбиком, а если не помещается по высоте — строкой.
+    case automatic
+    /// Значок слева, текст справа.
+    case horizontal
+    /// Значок сверху, текст под ним.
+    case vertical
+}
+
 struct PlaceholderView<Glyph: View>: View {
     var title: String
     var subtitle: String?
     var fill: Color = .white.opacity(0.08)
+    var layout: PlaceholderLayout = .automatic
     @ViewBuilder var glyph: () -> Glyph
 
     var body: some View {
-        // Места хватает — столбиком по центру; мало по высоте (заметки) — компактной строкой.
-        ViewThatFits(in: .vertical) {
-            VStack(spacing: 10) {
-                badge
-                VStack(spacing: 3) {
-                    titleText
-                    subtitleText
+        Group {
+            switch layout {
+            case .automatic:
+                ViewThatFits(in: .vertical) {
+                    column
+                    row
                 }
-                .multilineTextAlignment(.center)
-            }
-            HStack(spacing: 12) {
-                badge
-                VStack(alignment: .leading, spacing: 2) {
-                    titleText
-                    subtitleText
-                }
-                .multilineTextAlignment(.leading)
+            case .horizontal:
+                row
+            case .vertical:
+                column
             }
         }
         .padding(.horizontal, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var column: some View {
+        VStack(spacing: 10) {
+            badge
+            VStack(spacing: 3) {
+                titleText
+                subtitleText
+            }
+            .multilineTextAlignment(.center)
+        }
+    }
+
+    private var row: some View {
+        HStack(spacing: 12) {
+            badge
+            VStack(alignment: .leading, spacing: 2) {
+                titleText
+                subtitleText
+            }
+            .multilineTextAlignment(.leading)
+        }
     }
 
     private var badge: some View {
@@ -324,8 +350,8 @@ struct PlaceholderView<Glyph: View>: View {
 }
 
 extension PlaceholderView where Glyph == PlaceholderSymbol {
-    init(icon: String, title: String, subtitle: String? = nil) {
-        self.init(title: title, subtitle: subtitle) { PlaceholderSymbol(name: icon) }
+    init(icon: String, title: String, subtitle: String? = nil, layout: PlaceholderLayout = .automatic) {
+        self.init(title: title, subtitle: subtitle, layout: layout) { PlaceholderSymbol(name: icon) }
     }
 }
 

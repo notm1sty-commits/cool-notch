@@ -301,6 +301,21 @@ final class NotchViewModel {
         }
     }
 
+    /// «+» у AirDrop: выбрать файлы и сразу отправить их по AirDrop.
+    func pickFilesForAirDrop() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.prompt = "Отправить по AirDrop"
+        panel.message = "Выбери, что отправить по AirDrop"
+        NSApp.activate()
+        panel.begin { response in
+            guard response == .OK, !panel.urls.isEmpty else { return }
+            ShelfStore.airDrop(panel.urls)
+        }
+    }
+
     /// Свайп по чёлке: следующая или предыдущая карточка плеера.
     func swipeDeck(next: Bool) {
         let target = deckIndex + (next ? 1 : -1)
@@ -400,6 +415,12 @@ final class NotchViewModel {
     /// Сколько занимает содержимое текущей всплывашки (оно меряет себя само, см. BannerContentHeight).
     var bannerContentHeight: CGFloat?
 
+    /// Ширина всплывашек — компактная, как была раньше (не на всю раскрытую чёлку).
+    private var bannerWidth: CGFloat {
+        if case .airpods? = banner?.kind { return max(notchSize.width + 260, 446) }
+        return max(notchSize.width + 270, 456)
+    }
+
     var bannerSize: CGSize {
         // Пока содержимое не измерено — близкая оценка, потом форма подстроится точно.
         let estimate: CGFloat
@@ -408,8 +429,7 @@ final class NotchViewModel {
         } else {
             estimate = 70 + (banner?.expanded == true ? 16 : 0) + (banner?.source != nil ? 14 : 0)
         }
-        // Та же ширина, что у раскрытой чёлки — баннеры и панель выглядят одним целым.
-        return CGSize(width: openSize.width, height: notchSize.height + (bannerContentHeight ?? estimate))
+        return CGSize(width: bannerWidth, height: notchSize.height + (bannerContentHeight ?? estimate))
     }
 
     var openSize: CGSize {
@@ -473,12 +493,19 @@ final class NotchViewModel {
         closeTask?.cancel()
         closeTask = nil
 
-        // Курсор на уведомлении — держим его, чтобы можно было прочитать и нажать.
+        // Курсор на всплывашке: держим её (можно прочитать и нажать), а если курсор задержался —
+        // раскрываем чёлку, как обычно. Быстрый клик успевает раньше и открывает уведомление.
         if banner != nil, !isOpen, !fileDrag {
             bannerTask?.cancel()
             bannerTask = nil
-            openTask?.cancel()
-            openTask = nil
+            guard openTask == nil else { return }
+            let delay = max(0.5, Pref.double(Pref.hoverDelay))
+            openTask = Task { [weak self] in
+                do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                guard !Task.isCancelled else { return }
+                self?.openTask = nil
+                self?.open()
+            }
             return
         }
 
@@ -602,6 +629,9 @@ final class NotchViewModel {
 
     /// Нажатие на уведомление в чёлке.
     func performBannerAction(_ banner: NotchBanner) {
+        // Кликнули — не раскрываем чёлку следом.
+        openTask?.cancel()
+        openTask = nil
         dismissBanner()
         switch banner.action {
         case .openNotch:
