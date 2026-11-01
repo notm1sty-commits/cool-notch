@@ -202,18 +202,22 @@ struct BannerView: View {
         }
     }
 
+    /// У значков приложений есть прозрачные поля, поэтому рамка чуть больше высоты текста —
+    /// тогда сам значок визуально совпадает с блоком «приложение · заголовок · текст».
+    private var appIconSize: CGFloat { banner.source != nil ? 58 : 50 }
+
     @ViewBuilder
     private var icon: some View {
         switch banner.icon {
         case .artwork:
-            ArtworkView(image: vm.nowPlaying.artwork, size: 44, corner: 11)
+            ArtworkView(image: vm.nowPlaying.artwork, size: 50, corner: 12)
                 .shadow(color: .black.opacity(0.45), radius: 8, y: 4)
         case .app(let bundleID):
             if let icon = Self.appIcon(bundleID) {
                 Image(nsImage: icon)
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: 44, height: 44)
+                    .frame(width: appIconSize, height: appIconSize)
                     .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
             } else {
                 Image(systemName: "app.badge.fill")
@@ -251,7 +255,7 @@ struct AirPodsCard: View {
                     Text(name)
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
-                    Text("Подключены")
+                    Text("Подключено")
                         .font(.system(size: 11.5))
                         .foregroundStyle(Theme.secondaryText)
                 }
@@ -265,15 +269,21 @@ struct AirPodsCard: View {
 
     private var deviceSymbol: String {
         let lower = name.lowercased()
-        if lower.contains("max") { return "airpodsmax" }
-        if lower.contains("pro") { return "airpodspro" }
+        if lower.contains("airpods max") { return "airpodsmax" }
+        if lower.contains("airpods pro") { return "airpodspro" }
         if lower.contains("airpods") { return "airpods" }
+        if lower.contains("beats") { return "beats.headphones" }
+        let type = levels?.deviceType?.lowercased() ?? ""
+        if type.contains("speaker") { return "hifispeaker.fill" }
+        if type.contains("car") { return "car.fill" }
         return "headphones"
     }
 
     @ViewBuilder
     private var batteries: some View {
-        if let levels {
+        if let levels, levels.isEmpty {
+            EmptyView()
+        } else if let levels {
             HStack(spacing: 12) {
                 if let single = levels.single, levels.left == nil {
                     BatteryRing(symbol: "headphones", label: "Заряд", level: single)

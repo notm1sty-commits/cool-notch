@@ -644,7 +644,8 @@ final class NotchViewModel {
                 title: previous.name,
                 subtitle: "Отключено · звук через динамики Mac"
             ))
-        } else if device.name.localizedCaseInsensitiveContains("airpods") || device.name.localizedCaseInsensitiveContains("beats") {
+        } else if device.isWireless {
+            // Любые беспроводные наушники и колонки — одна карточка; заряд, если устройство его сообщает.
             showAirPods(name: device.name)
         } else {
             post(NotchBanner(
@@ -670,8 +671,8 @@ final class NotchViewModel {
         post(card)
         guard levels == nil else { return }
         AirPodsBattery.fetch(deviceName: name) { [weak self] levels in
-            guard let self, let levels else { return }
-            self.updateBanner(card.id) { $0.kind = .airpods(name: name, levels: levels) }
+            // Заряда нет — убираем ожидание, карточка просто скажет «Подключено».
+            self?.updateBanner(card.id) { $0.kind = .airpods(name: name, levels: levels ?? AirPodsLevels()) }
         }
     }
 
