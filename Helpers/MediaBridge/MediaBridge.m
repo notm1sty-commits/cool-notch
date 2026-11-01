@@ -4,7 +4,7 @@
 // своим процессам. Поэтому Cool Notch запускает системный /usr/bin/perl, тот
 // загружает эту библиотеку и вызывает coolnotch_bridge_run(). Дальше библиотека:
 //   • пишет в stdout по одной JSON-строке на каждое изменение трека;
-//   • читает из stdin команды: play, pause, toggle, stop, next, prev, seek <сек>, refresh;
+//   • читает из stdin команды: play, pause, toggle, stop, next, prev, seek <сек>, refresh, burst;
 //   • завершается, когда закрывается stdin (то есть когда закрылся Cool Notch).
 //
 // Так чёлка видит любой плеер: приложение Яндекс Музыки, браузер, Spotify и т. д.
@@ -51,6 +51,12 @@ static BOOL gRefreshInFlight = NO;
 static BOOL gRefreshPending = NO;
 static CFAbsoluteTime gRefreshStarted = 0;
 static NSMutableData *gInputBuffer = nil;
+/// «Рывок»: сразу после переключения трека полторы секунды опрашиваем систему часто,
+/// чтобы новый трек показался как можно быстрее. В остальное время — только по уведомлениям.
+static dispatch_source_t gBurstTimer = nil;
+static CFAbsoluteTime gBurstUntil = 0;
+/// Последнее отправленное состояние — во время «рывка» одинаковое не повторяем.
+static NSString *gLastInfoSignature = nil;
 
 static void emitJSON(NSDictionary *payload) {
     NSData *data = [NSJSONSerialization dataWithJSONObject:payload options:0 error:NULL];
@@ -112,6 +118,13 @@ static void emitInfo(NSDictionary *info, BOOL playing, int pid) {
         gLastArtworkKey = nil;
     }
 
+    NSString *signature = [NSString stringWithFormat:@"%@|%@|%@|%@|%@|%@|%d|%@",
+        title, artist, album, out[@"elapsed"], out[@"rate"], out[@"timestamp"], pid, out[@"hasArtwork"]];
+    BOOL bursting = CFAbsoluteTimeGetCurrent() < gBurstUntil;
+    if (bursting && out[@"artwork"] == nil && [signature isEqualToString:gLastInfoSignature]) {
+        return;
+    }
+    gLastInfoSignature = signature;
     emitJSON(out);
 }
 
@@ -229,6 +242,7 @@ static void refreshClients(void) {
 
 static void scheduleRefresh(void);
 static void refreshNow(void);
+static void refreshMain(void);
 
 /// Запросы идут строго по одному: пока один не ответил, новые события только помечают
 /// «нужно ещё раз». Раньше более свежий запрос отменял текущий, и плееры, которые
@@ -237,7 +251,11 @@ static void finishRefresh(void) {
     gRefreshInFlight = NO;
     if (gRefreshPending) {
         gRefreshPending = NO;
-        refreshNow();
+        if (CFAbsoluteTimeGetCurrent() < gBurstUntil) {
+            refreshMain();
+        } else {
+            refreshNow();
+        }
     }
 }
 
@@ -283,7 +301,8 @@ static void performRefresh(int attempt) {
     });
 }
 
-static void refreshNow(void) {
+/// Только выбранный системой плеер — то, что меняется при переключении трека.
+static void refreshMain(void) {
     if (gGetInfo == NULL) {
         emitJSON(@{ @"type": @"info", @"empty": @YES });
         return;
@@ -297,18 +316,46 @@ static void refreshNow(void) {
     gRefreshInFlight = YES;
     gRefreshStarted = now;
     performRefresh(0);
+}
+
+static void refreshNow(void) {
+    refreshMain();
     refreshClients();
 }
 
+/// Уведомления приходят пачкой — собираем их за один кадр (раньше ждали 80 мс).
 static void scheduleRefresh(void) {
     if (gRefreshScheduled) {
         return;
     }
     gRefreshScheduled = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(80 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(16 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         gRefreshScheduled = NO;
         refreshNow();
     });
+}
+
+/// После «следующий/предыдущий» ~1,6 с опрашиваем плеер каждые 60 мс: многие плееры
+/// сообщают о новом треке с задержкой или по частям. Запросы всё равно идут строго
+/// по одному, а одинаковые ответы не пересылаются — нагрузка небольшая и только в этот момент.
+static void startBurst(double seconds) {
+    gBurstUntil = MAX(gBurstUntil, CFAbsoluteTimeGetCurrent() + seconds);
+    if (gBurstTimer != nil) {
+        return;
+    }
+    dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 40 * NSEC_PER_MSEC), 60 * NSEC_PER_MSEC, 10 * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(timer, ^{
+        if (CFAbsoluteTimeGetCurrent() > gBurstUntil) {
+            dispatch_source_cancel(gBurstTimer);
+            gBurstTimer = nil;
+            refreshNow();
+            return;
+        }
+        refreshMain();
+    });
+    gBurstTimer = timer;
+    dispatch_resume(timer);
 }
 
 static void handleCommand(NSString *line) {
@@ -321,6 +368,10 @@ static void handleCommand(NSString *line) {
 
     if ([name isEqualToString:@"refresh"]) {
         refreshNow();
+        return;
+    }
+    if ([name isEqualToString:@"burst"]) {
+        startBurst(1.6);
         return;
     }
     if ([name isEqualToString:@"seek"]) {
@@ -341,6 +392,9 @@ static void handleCommand(NSString *line) {
 
     if (command >= 0 && gSendCommand != NULL) {
         gSendCommand(command, NULL);
+    }
+    if (command == 4 || command == 5) {
+        startBurst(1.6);
     }
     scheduleRefresh();
 }

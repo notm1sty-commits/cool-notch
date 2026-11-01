@@ -489,7 +489,7 @@ final class NotchViewModel {
 
     var openSize: CGSize {
         // Высота подогнана под содержимое плеера (обложка, текст, прогресс, кнопки) без пустых полей.
-        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + Theme.playerHeight + 42)
+        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + Theme.playerHeight + 35)
     }
 
     var shapeSize: CGSize {
@@ -649,7 +649,7 @@ final class NotchViewModel {
     // MARK: Now playing banner
 
     /// Трек, который показывает всплывашка «Сейчас играет». Обновляется только когда данные
-    /// «устоялись» (~0,35 с без изменений), и всё сразу — название, исполнитель и обложка.
+    /// «устоялись» (~0,2 с без изменений), и всё сразу — название, исполнитель и обложка.
     /// Поэтому при быстром переключении треков всплывашка не собирает кусочки разных треков.
     struct NowPlayingSnapshot: Equatable {
         var title: String
@@ -699,7 +699,7 @@ final class NotchViewModel {
     private func nowPlayingChanged() {
         snapshotTask?.cancel()
         snapshotTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(350))
+            try? await Task.sleep(for: .milliseconds(200))
             guard let self, !Task.isCancelled else { return }
             let fresh = self.currentSnapshot()
             if fresh != self.nowPlayingSnapshot { self.nowPlayingSnapshot = fresh }
@@ -712,8 +712,8 @@ final class NotchViewModel {
         guard Pref.bool(Pref.trackBanners), !isOpen else { return }
         announceTask?.cancel()
         announceTask = Task { @MainActor [weak self] in
-            // Плееры присылают трек по кусочкам (название, потом исполнитель, потом обложка) — ждём.
-            try? await Task.sleep(for: .milliseconds(450))
+            // Плееры присылают трек по кусочкам (название, потом исполнитель, потом обложка) — чуть ждём.
+            try? await Task.sleep(for: .milliseconds(260))
             guard let self, !Task.isCancelled, !self.isOpen else { return }
             self.snapshotTask?.cancel()
             self.nowPlayingSnapshot = self.currentSnapshot()

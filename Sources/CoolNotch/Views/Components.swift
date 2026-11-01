@@ -6,15 +6,21 @@ struct ArtworkView: View {
     var image: NSImage?
     var size: CGFloat
     var corner: CGFloat
+    /// Прежняя обложка, пока новая догружается (новый трек часто приходит без неё).
+    @State private var held: NSImage?
+    @State private var holdTask: Task<Void, Never>?
 
     var body: some View {
+        let shown = image ?? held
         ZStack {
-            if let image {
-                Image(nsImage: image)
+            if let shown {
+                // У каждой картинки своя «личность» — новая обложка плавно проявляется поверх старой.
+                Image(nsImage: shown)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
+                    .id(ObjectIdentifier(shown))
+                    .transition(.opacity.combined(with: .scale(scale: 1.08)))
             } else {
                 LinearGradient(
                     colors: [Color(white: 0.22), Color(white: 0.12)],
@@ -32,7 +38,24 @@ struct ArtworkView: View {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
         )
-        .animation(Theme.content, value: image)
+        .opacity(image == nil && held != nil ? 0.6 : 1)
+        .animation(Theme.track, value: shown.map { ObjectIdentifier($0) })
+        .animation(Theme.track, value: image == nil)
+        .onAppear { held = image }
+        .onChange(of: image.map { ObjectIdentifier($0) }) { _, _ in hold() }
+    }
+
+    private func hold() {
+        holdTask?.cancel()
+        if let image {
+            held = image
+            return
+        }
+        holdTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(Theme.track) { held = nil }
+        }
     }
 }
 

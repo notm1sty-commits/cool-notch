@@ -213,6 +213,13 @@ final class NowPlayingService {
     }
 
     private(set) var controlIssues: [PlayerSource: ControlIssue] = [:]
+    /// Нажали «следующий/предыдущий» и ждём новый трек: источник → направление (+1 / −1).
+    /// Карточка сразу показывает, что трек меняется, а не стоит как была.
+    private(set) var switching: [PlayerSource: Int] = [:]
+    /// Куда листали в последний раз — в ту сторону и уезжает старое название.
+    private(set) var lastSkipDirection = 1
+    @ObservationIgnored private var switchingFrom: [PlayerSource: String] = [:]
+    @ObservationIgnored private var switchTimeouts: [PlayerSource: Task<Void, Never>] = [:]
     /// Почему последняя команда вкладке не сработала.
     @ObservationIgnored private var lastBrowserFailure: [PlayerSource: BrowserMediaSource.ControlResult] = [:]
     /// Какой трек мы уже объявляли для каждого источника: баннер только при настоящей смене
@@ -531,7 +538,52 @@ final class NowPlayingService {
             let target = item.position(at: Date()) + (forward ? 10 : -10)
             seek(item, to: max(0, item.duration > 0 ? min(item.duration, target) : target))
         } else if !isDemo {
+            beginSwitch(item.id, direction: forward ? 1 : -1)
             send(forward ? .next : .previous, to: item.id)
+            burstRefresh(item.id)
+        }
+    }
+
+    /// Карточка сразу «отпускает» текущий трек; как только придёт новый (или через 1,8 с) — обычный вид.
+    private func beginSwitch(_ source: PlayerSource, direction: Int) {
+        lastSkipDirection = direction
+        switchingFrom[source] = candidates[source].map { Self.trackIdentity($0.track) } ?? ""
+        switching[source] = direction
+        switchTimeouts[source]?.cancel()
+        switchTimeouts[source] = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.8))
+            guard !Task.isCancelled else { return }
+            self?.endSwitch(source)
+        }
+    }
+
+    private func endSwitch(_ source: PlayerSource) {
+        switchTimeouts[source]?.cancel()
+        switchTimeouts[source] = nil
+        switchingFrom[source] = nil
+        if switching[source] != nil { switching[source] = nil }
+    }
+
+    /// Сразу после переключения трека чаще спрашиваем плеер — только эти полторы секунды.
+    private func burstRefresh(_ source: PlayerSource) {
+        switch source {
+        case .music, .spotify:
+            for delay in [120, 300, 650] {
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    self?.refresh(source)
+                }
+            }
+        case .browser:
+            bridge.send("burst")
+            for delay in [350, 900] {
+                Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    self?.pollBrowsers()
+                }
+            }
+        case .system:
+            bridge.send("burst")
         }
     }
 
@@ -820,6 +872,13 @@ final class NowPlayingService {
         let ordered = visible.sorted { lhs, rhs in
             if lhs.isPlaying != rhs.isPlaying { return lhs.isPlaying }
             return lhs.lastActivity > rhs.lastActivity
+        }
+        // Пришёл новый трек у источника, который листали, — снимаем «переключение» в том же
+        // обновлении, что и новые данные: старое название уезжает, новое въезжает одним движением.
+        for (source, from) in switchingFrom {
+            if let candidate = candidates[source], Self.trackIdentity(candidate.track) != from {
+                endSwitch(source)
+            }
         }
         let newItems = ordered.map(makeItem)
         if newItems != items { items = newItems }

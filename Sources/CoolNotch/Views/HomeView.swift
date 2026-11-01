@@ -56,7 +56,7 @@ private struct MediaDeck: View {
         GeometryReader { geo in
             let cardWidth = max(220, geo.size.width - 100)
             let cardHeight = Theme.playerHeight
-            VStack(spacing: 10) {
+            VStack(spacing: 7) {
                 ZStack {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                         MediaCard(item: item, depth: depth)
@@ -89,17 +89,19 @@ private struct MediaDeck: View {
                 }
 
                 if items.count > 1 {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                             Capsule()
                                 .fill(Color.white.opacity(index == vm.deckIndex ? 1 : 0.3))
-                                .frame(width: index == vm.deckIndex ? 18 : 6, height: 6)
+                                .frame(width: index == vm.deckIndex ? 13 : 4.5, height: 4.5)
+                                // Попасть по маленькой точке легче: зона нажатия больше самой точки.
+                                .padding(.vertical, 4)
                                 .contentShape(Rectangle())
                                 .onTapGesture { vm.selectDeck(index) }
                                 .help(item.sourceLabel)
                         }
                     }
-                    .frame(height: 10)
+                    .frame(height: 6)
                     .animation(Theme.bouncy, value: vm.deckIndex)
                 }
             }
@@ -207,6 +209,15 @@ private struct MediaCard: View {
     @State var tilt = CGSize.zero
     @State var appeared = false
     @State var opened = false
+    /// Прежняя обложка: новый трек часто приходит без неё, и она догружается чуть позже.
+    /// Пока ждём, показываем прежнюю приглушённой, а не серую заглушку.
+    @State var heldArtwork: NSImage?
+    @State var holdTask: Task<Void, Never>?
+
+    private var shownArtwork: NSImage? { item.artwork ?? heldArtwork }
+    private var switchingNow: Bool { vm.nowPlaying.switching[item.id] != nil }
+    private var direction: CGFloat { CGFloat(vm.nowPlaying.lastSkipDirection) }
+    private var artworkLoading: Bool { switchingNow || (item.artwork == nil && heldArtwork != nil) }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -214,12 +225,28 @@ private struct MediaCard: View {
             meta
         }
         .frame(height: Theme.playerHeight)
+        .onChange(of: item.artwork.map { ObjectIdentifier($0) }) { _, _ in holdArtwork() }
         .onAppear {
+            heldArtwork = item.artwork
             if depth {
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.9).delay(0.08)) { appeared = true }
             } else {
                 appeared = true
             }
+        }
+    }
+
+    private func holdArtwork() {
+        holdTask?.cancel()
+        if let image = item.artwork {
+            heldArtwork = image
+            return
+        }
+        // Обложки так и нет — через полторы секунды честно показываем заглушку.
+        holdTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            withAnimation(Theme.track) { heldArtwork = nil }
         }
     }
 
@@ -233,11 +260,14 @@ private struct MediaCard: View {
         let shape = RoundedRectangle(cornerRadius: artRadius, style: .continuous)
         return ZStack {
             ZStack {
-                if let image = item.artwork {
+                if let image = shownArtwork {
+                    // Своя «личность» у каждой картинки — новая обложка плавно проявляется поверх старой.
                     Image(nsImage: image)
                         .resizable()
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fill)
+                        .id(ObjectIdentifier(image))
+                        .transition(.opacity.combined(with: .scale(scale: 1.06)))
                 } else {
                     LinearGradient(colors: [Color(white: 0.24), Color(white: 0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)
                     Image(systemName: item.isVideo ? "play.rectangle.fill" : "music.note")
@@ -247,6 +277,10 @@ private struct MediaCard: View {
                 if item.isVideo { videoOverlay }
             }
             .frame(width: size.width, height: size.height)
+            .brightness(artworkLoading ? -0.14 : 0)
+            .saturation(artworkLoading ? 0.6 : 1)
+            .animation(Theme.track, value: shownArtwork.map { ObjectIdentifier($0) })
+            .animation(Theme.track, value: artworkLoading)
             .clipShape(shape)
             .overlay(shape.strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
             .shadow(color: .black.opacity(0.45), radius: 14, y: 8)
@@ -254,6 +288,9 @@ private struct MediaCard: View {
             .rotation3DEffect(.degrees(depth ? Double(-tilt.height) * 8 : 0), axis: (x: 1, y: 0, z: 0), perspective: 0.5)
             .scaleEffect(item.isPlaying || item.isVideo ? 1 : 0.92)
             .animation(.spring(response: 0.5, dampingFraction: 0.6), value: item.isPlaying)
+            // Нажали «следующий» — обложка чуть «отходит», пока плеер не пришлёт новый трек.
+            .scaleEffect(switchingNow ? 0.95 : 1)
+            .animation(Theme.track, value: switchingNow)
         }
         .frame(width: size.width, height: size.height)
         .scaleEffect(appeared ? 1 : 0.96)
@@ -333,10 +370,16 @@ private struct MediaCard: View {
             .frame(height: 16)
 
             HStack(spacing: 9) {
-                Text(item.title)
-                    .font(.system(size: 18, weight: .semibold))
-                    .tracking(-0.4)
-                    .lineLimit(1)
+                // Новое название въезжает с той стороны, куда листали, старое уезжает в другую.
+                ZStack(alignment: .leading) {
+                    Text(item.title)
+                        .font(.system(size: 18, weight: .semibold))
+                        .tracking(-0.4)
+                        .lineLimit(1)
+                        .id(item.title)
+                        .transition(TrackSlide(direction: direction))
+                }
+                .modifier(SwitchingLook(active: switchingNow, direction: direction))
                 if item.isPlaying {
                     EqualizerView(color: item.accent, isPlaying: true, lowPower: vm.lowPower)
                         .frame(width: 20, height: 12)
@@ -345,17 +388,27 @@ private struct MediaCard: View {
             }
             .frame(height: 24)
             .padding(.top, 4)
+            .animation(Theme.track, value: item.title)
+            .animation(Theme.track, value: switchingNow)
 
             if let issue = vm.nowPlaying.controlIssues[item.id] {
                 ControlIssueRow(issue: issue) { vm.nowPlaying.enableBrowserJavaScript(for: item) }
                     .frame(height: 18, alignment: .leading)
                     .transition(.opacity)
             } else {
-                Text(item.subtitle.isEmpty ? " " : item.subtitle)
-                    .font(.system(size: 13.5))
-                    .foregroundStyle(Theme.secondaryText)
-                    .lineLimit(1)
-                    .frame(height: 18)
+                ZStack(alignment: .leading) {
+                    Text(item.subtitle.isEmpty ? " " : item.subtitle)
+                        .font(.system(size: 13.5))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(1)
+                        .id(item.subtitle)
+                        .transition(TrackSlide(direction: direction, distance: 12))
+                }
+                .frame(height: 18)
+                .modifier(SwitchingLook(active: switchingNow, direction: direction))
+                // Исполнитель — на долю мгновения позже названия: смена читается как одно движение.
+                .animation(Theme.track.delay(0.03), value: item.subtitle)
+                .animation(Theme.track, value: switchingNow)
             }
 
             ProgressRow(item: item)

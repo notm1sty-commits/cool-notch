@@ -156,6 +156,7 @@ struct BannerView: View {
     private var isNowPlaying: Bool { banner.kind == .nowPlaying }
     private var snapshot: NotchViewModel.NowPlayingSnapshot? { isNowPlaying ? vm.nowPlayingSnapshot : nil }
     private var titleText: String { snapshot?.title ?? banner.title }
+    private var trackDirection: CGFloat { CGFloat(vm.nowPlaying.lastSkipDirection) }
     private var subtitleText: String? {
         guard isNowPlaying else { return banner.subtitle }
         guard let snapshot, !snapshot.detail.isEmpty else { return nil }
@@ -206,17 +207,26 @@ struct BannerView: View {
                     .font(.system(size: 10, weight: .bold))
                     .tracking(0.6)
                 }
-                HStack(alignment: .firstTextBaseline) {
+                // Быстро листают треки — название и исполнитель плавно сменяются в той же всплывашке.
+                ZStack(alignment: .leading) {
                     Text(titleText)
                         .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
+                        .id(titleText)
+                        .transition(TrackSlide(direction: trackDirection, distance: 12))
                 }
+                .animation(Theme.track, value: titleText)
                 if let subtitle = subtitleText {
-                    Text(subtitle)
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(Theme.secondaryText)
-                        .lineLimit(banner.expanded ? 2 : 1)
-                        .fixedSize(horizontal: false, vertical: true)
+                    ZStack(alignment: .leading) {
+                        Text(subtitle)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(Theme.secondaryText)
+                            .lineLimit(banner.expanded ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .id(subtitle)
+                            .transition(TrackSlide(direction: trackDirection, distance: 10))
+                    }
+                    .animation(Theme.track.delay(0.03), value: subtitle)
                 }
             }
             if banner.icon == .artwork {
