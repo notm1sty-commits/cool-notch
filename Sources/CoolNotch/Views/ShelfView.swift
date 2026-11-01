@@ -24,16 +24,16 @@ struct ShelfView: View {
                                 ShelfItemTile(item: item, shelf: shelf)
                                     .transition(RevealTransition(scale: 0.8, offset: .zero))
                             }
-                            AddFilesTile { vm.pickFilesForShelf() }
-                                .opacity(hovering ? 1 : 0)
-                                .animation(Theme.micro, value: hovering)
                         }
                         .padding(.horizontal, 8)
                         .frame(maxHeight: .infinity)
                     }
                     .overlay(alignment: .topTrailing) {
-                        CapsuleButton(title: "Очистить", systemImage: nil) {
-                            withAnimation(Theme.content) { shelf.clear() }
+                        HStack(spacing: 6) {
+                            AddButton { vm.pickFilesForShelf() }
+                            CapsuleButton(title: "Очистить", systemImage: nil) {
+                                withAnimation(Theme.content) { shelf.clear() }
+                            }
                         }
                         .padding(8)
                     }
@@ -80,32 +80,23 @@ private struct DropHint: View {
     }
 }
 
-/// Плитка «Добавить» в конце полки: выбрать файлы через окно Finder.
-private struct AddFilesTile: View {
+/// Маленький «+» рядом с «Очистить»: добавить файлы на полку через окно Finder.
+private struct AddButton: View {
     var action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 5) {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.white.opacity(hovering ? 0.45 : 0.22), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .frame(width: 50, height: 50)
-                    .overlay(
-                        Image(systemName: "plus")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white.opacity(hovering ? 1 : 0.7))
-                    )
-                Text("Добавить")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(Theme.secondaryText)
-                    .frame(width: 76, height: 26, alignment: .top)
-            }
-            .contentShape(Rectangle())
+            Image(systemName: "plus")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 26, height: 26)
+                .background(Circle().fill(Color.white.opacity(hovering ? 0.16 : 0.09)))
+                .contentShape(Circle())
         }
-        .buttonStyle(PressableButtonStyle(scale: 0.92))
-        .onHover { hovering = $0 }
-        .help("Выбрать файлы для полки")
+        .buttonStyle(PressableButtonStyle(scale: 0.9))
+        .onHover { value in withAnimation(Theme.micro) { hovering = value } }
+        .help("Добавить файлы")
     }
 }
 
@@ -115,12 +106,12 @@ private struct AirDropZone: View {
     @State var hovering = false
 
     var body: some View {
-        let hasItems = !vm.shelf.items.isEmpty
-        // Без файлов на полке при наведении — плюсик: нажми и выбери, что отправить.
-        let picking = hovering && !hasItems && !targeted
+        // При наведении — плюсик: нажми и выбери, что отправить. Файл с полки можно просто
+        // перетащить сюда. Подпись одна и та же, чтобы ничего не прыгало.
+        let picking = hovering && !targeted
         PlaceholderView(
             title: "AirDrop",
-            subtitle: targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми — отправлю всё" : (picking ? "Выбрать файл" : "Брось файл сюда")),
+            subtitle: "Брось файл сюда",
             fill: Color(red: 0.12, green: 0.5, blue: 1),
             layout: .vertical
         ) {
@@ -136,9 +127,7 @@ private struct AirDropZone: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glass(Theme.cardRadius, highlighted: targeted || hovering, tint: targeted ? Color(red: 0.35, green: 0.68, blue: 1) : .white, soft: true)
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
-        .onTapGesture {
-            if hasItems { vm.shelf.airDropAll() } else { vm.pickFilesForAirDrop() }
-        }
+        .onTapGesture { vm.pickFilesForAirDrop() }
         .onHover { hovering = $0 }
         .onDrop(of: [.fileURL], isTargeted: $targeted) { providers in
             vm.handleAirDrop(providers)
@@ -190,7 +179,7 @@ private struct ShelfItemTile: View {
         .onHover { value in
             withAnimation(Theme.micro) { hovering = value }
         }
-        .onDrag { NSItemProvider(contentsOf: item.url) ?? NSItemProvider() }
+        .onDrag { NSItemProvider(object: item.url as NSURL) }
         .onTapGesture(count: 2) { shelf.open(item) }
         .help(item.url.path)
         .contextMenu {
