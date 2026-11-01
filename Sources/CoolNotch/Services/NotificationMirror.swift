@@ -309,6 +309,20 @@ final class NotificationDatabaseReader: @unchecked Sendable {
         func text(_ key: String) -> String {
             (request[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         }
-        return (root["app"] as? String ?? "", text("titl"), text("subt"), text("body"))
+        var title = text("titl"), subtitle = text("subt"), body = text("body")
+        // Некоторые приложения кладут текст в другие поля (локализованные ключи и т. п.).
+        // Если привычных нет — берём любые текстовые значения из запроса, чтобы не промолчать.
+        if title.isEmpty && body.isEmpty {
+            let skip: Set<String> = ["iden", "thre", "cate", "sound", "srce", "uuid", "intd", "trig"]
+            let extra = request
+                .filter { !skip.contains($0.key) }
+                .sorted { $0.key < $1.key }
+                .compactMap { ($0.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty && !$0.contains("://") && $0.count < 400 }
+            title = extra.first ?? ""
+            body = extra.dropFirst().first ?? ""
+            subtitle = ""
+        }
+        return (root["app"] as? String ?? "", title, subtitle, body)
     }
 }

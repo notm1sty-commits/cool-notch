@@ -60,6 +60,9 @@ final class NotchMotion {
         var widthVelocity: CGFloat
         var heightVelocity: CGFloat
         var isMoving: Bool
+        /// Куда едет пружина — по отношению «сейчас / цель» содержимое повторяет колыхание плашки.
+        var targetWidth: CGFloat
+        var targetHeight: CGFloat
     }
 
     enum Feel {
@@ -84,7 +87,9 @@ final class NotchMotion {
             ),
             widthVelocity: CGFloat(springs[0].velocity),
             heightVelocity: CGFloat(springs[1].velocity),
-            isMoving: link != nil
+            isMoving: link != nil,
+            targetWidth: CGFloat(springs[0].target),
+            targetHeight: CGFloat(springs[1].target)
         )
     }
 

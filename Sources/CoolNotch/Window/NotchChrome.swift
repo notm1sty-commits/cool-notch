@@ -146,14 +146,27 @@ final class NotchChrome {
         tintLayer.path = closed
         glassMask.path = closed
         contentMask.path = closed
-        if sx == 1 && sy == 1 {
-            contentContainer.layer?.sublayerTransform = CATransform3DIdentity
-        } else {
-            let pivotX = bounds.midX
-            var transform = CATransform3DMakeTranslation(pivotX, 0, 0)
-            transform = CATransform3DScale(transform, sx, sy, 1)
-            transform = CATransform3DTranslate(transform, -pivotX, 0, 0)
-            contentContainer.layer?.sublayerTransform = transform
+        // Содержимое колышется ровно вместе с плашкой: масштаб = «текущий размер / целевой»
+        // (та же пружина, тот же отскок), в пределах ±10 %, от верхнего края по центру.
+        // Сам SwiftUI сразу стоит в целевом размере, поэтому отдельной «своей» анимации у него нет.
+        var cx: CGFloat = 1, cy: CGFloat = 1
+        if state.jelly, frame.targetWidth > 1, frame.targetHeight > 1 {
+            cx = min(max(g.width / frame.targetWidth, 0.9), 1.1)
+            cy = min(max(g.height / frame.targetHeight, 0.9), 1.1)
+        }
+        if let layer = contentContainer.layer {
+            if abs(cx - 1) < 0.001 && abs(cy - 1) < 0.001 {
+                layer.sublayerTransform = CATransform3DIdentity
+            } else {
+                // sublayerTransform применяется относительно anchorPoint слоя — учитываем его,
+                // чтобы центр масштаба был точно «верх по центру».
+                let anchor = CGPoint(x: layer.anchorPoint.x * layer.bounds.width, y: layer.anchorPoint.y * layer.bounds.height)
+                let pivot = CGPoint(x: bounds.midX, y: 0)
+                var transform = CATransform3DMakeTranslation(pivot.x - anchor.x, pivot.y - anchor.y, 0)
+                transform = CATransform3DScale(transform, cx, cy, 1)
+                transform = CATransform3DTranslate(transform, anchor.x - pivot.x, anchor.y - pivot.y, 0)
+                layer.sublayerTransform = transform
+            }
         }
         hairline.path = open
         hairline.lineWidth = k

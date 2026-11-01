@@ -31,7 +31,8 @@ private struct NotchContent: View {
         .onDrop(of: [.fileURL], isTargeted: dropBinding) { providers in
             vm.handleDrop(providers)
         }
-        .animation(simple ? Theme.reduced : Theme.content, value: vm.presentation)
+        // Размер содержимого сразу целевой: двигается и колышется только плашка (Core Animation),
+        // а содержимое повторяет её масштабом — так их «желе» совпадает.
     }
 
     @ViewBuilder

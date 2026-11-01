@@ -130,6 +130,7 @@ struct SettingsView: View {
                             }
                         }
                     }
+                    AppColorsSection()
                 case .notifications:
                     Section("Уведомления в чёлке") {
                         Toggle("Уведомления всех приложений", isOn: $systemNotifications)
@@ -514,5 +515,79 @@ private struct PlayerDiagnosticsRow: View {
             lines.append("Режим «все плееры» выключен после сбоя")
         }
         return lines.joined(separator: "\n")
+    }
+}
+
+/// «Цвета приложений»: цвет, которым подписано приложение в «Сейчас играет». По умолчанию —
+/// средний цвет иконки; можно задать свой или сбросить все.
+private struct AppColorsSection: View {
+    @State private var apps: [String] = AppColorCache.knownApps
+    @State private var revision = 0
+
+    var body: some View {
+        Section("Цвета приложений") {
+            if apps.isEmpty {
+                Text("Появятся здесь, когда в чёлке что-нибудь заиграет.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(apps, id: \.self) { bundleID in
+                    AppColorRow(bundleID: bundleID, revision: revision) { revision += 1 }
+                }
+            }
+            HStack {
+                Text("Цвет берётся из иконки приложения один раз и запоминается.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                Button("Сбросить цвета плееров") {
+                    AppColorCache.resetAll()
+                    apps = AppColorCache.knownApps
+                    revision += 1
+                }
+            }
+        }
+        .onAppear { apps = AppColorCache.knownApps }
+    }
+}
+
+private struct AppColorRow: View {
+    let bundleID: String
+    let revision: Int
+    var changed: () -> Void
+
+    var body: some View {
+        let custom = AppColorCache.isCustom(bundleID)
+        HStack(spacing: 10) {
+            if let icon = AppColorCache.appIcon(bundleID) {
+                Image(nsImage: icon)
+                    .resizable()
+                    .frame(width: 20, height: 20)
+            }
+            Text(AppColorCache.displayName(bundleID))
+            if custom {
+                Text("свой")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if custom {
+                Button("Как в иконке") {
+                    AppColorCache.clearCustom(for: bundleID)
+                    changed()
+                }
+                .controlSize(.small)
+            }
+            ColorPicker("", selection: Binding(
+                get: { Color(nsColor: AppColorCache.color(for: bundleID, icon: nil)) },
+                set: { newValue in
+                    AppColorCache.setCustom(NSColor(newValue), for: bundleID)
+                    changed()
+                }
+            ), supportsOpacity: false)
+            .labelsHidden()
+        }
+        .id("\(bundleID)-\(revision)")
     }
 }

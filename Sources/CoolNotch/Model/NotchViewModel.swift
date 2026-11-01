@@ -807,7 +807,9 @@ final class NotchViewModel {
         let appName = NSWorkspace.shared.urlForApplication(withBundleIdentifier: notification.bundleID)
             .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") } ?? ""
         let title = notification.title.isEmpty ? appName : notification.title
-        let text = [notification.subtitle, notification.body].filter { !$0.isEmpty }.joined(separator: " — ")
+        var text = [notification.subtitle, notification.body].filter { !$0.isEmpty }.joined(separator: " — ")
+        // Совсем без текста (приложение спрятало содержимое) — всё равно показываем, от кого.
+        if text.isEmpty && !appName.isEmpty { text = "Новое уведомление" }
         guard !title.isEmpty || !text.isEmpty else { return }
         post(NotchBanner(
             icon: .app(notification.bundleID),
@@ -924,27 +926,80 @@ enum FileDropLoader {
     }
 }
 
-/// Средний цвет иконки приложения для подписи «Сейчас играет · Приложение». Считается один раз
-/// и запоминается в настройках, дальше берётся готовый.
+/// Цвет приложения для подписи «Сейчас играет · Приложение». По умолчанию — средний цвет
+/// иконки, посчитанный один раз и запомненный в настройках. Пользователь может задать свой
+/// цвет в настройках («Плеер» → «Цвета приложений») или сбросить всё.
 @MainActor
 enum AppColorCache {
     private static let key = "appIconColors"
+    private static let overridesKey = "appColorOverrides"
     private static var memory: [String: NSColor] = [:]
 
     static func color(for bundleID: String, icon: NSImage?) -> NSColor {
+        if let custom = stored(overridesKey)[bundleID] { return custom }
         if let cached = memory[bundleID] { return cached }
-        if let stored = UserDefaults.standard.dictionary(forKey: key)?[bundleID] as? [Double], stored.count == 3 {
-            let color = NSColor(srgbRed: stored[0], green: stored[1], blue: stored[2], alpha: 1)
-            memory[bundleID] = color
-            return color
+        if let saved = stored(key)[bundleID] {
+            memory[bundleID] = saved
+            return saved
         }
         guard !bundleID.isEmpty else { return .white }
-        let image = icon ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map { NSWorkspace.shared.icon(forFile: $0.path) }
+        let image = icon ?? appIcon(bundleID)
         guard let color = image?.averageAccentColor?.usingColorSpace(.sRGB) else { return .white }
         memory[bundleID] = color
+        save(color, for: bundleID, in: key)
+        return color
+    }
+
+    /// Приложения, для которых цвет уже известен, — для списка в настройках.
+    static var knownApps: [String] {
+        Array(Set(stored(key).keys).union(stored(overridesKey).keys)).sorted { displayName($0) < displayName($1) }
+    }
+
+    static func isCustom(_ bundleID: String) -> Bool {
+        stored(overridesKey)[bundleID] != nil
+    }
+
+    static func setCustom(_ color: NSColor, for bundleID: String) {
+        guard let srgb = color.usingColorSpace(.sRGB) else { return }
+        save(srgb, for: bundleID, in: overridesKey)
+    }
+
+    static func clearCustom(for bundleID: String) {
+        var all = UserDefaults.standard.dictionary(forKey: overridesKey) ?? [:]
+        all[bundleID] = nil
+        UserDefaults.standard.set(all, forKey: overridesKey)
+    }
+
+    /// «Сбросить цвета плееров»: забываем и посчитанные, и заданные вручную — посчитаются заново.
+    static func resetAll() {
+        memory.removeAll()
+        UserDefaults.standard.removeObject(forKey: key)
+        UserDefaults.standard.removeObject(forKey: overridesKey)
+    }
+
+    static func displayName(_ bundleID: String) -> String {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+            .map { FileManager.default.displayName(atPath: $0.path).replacingOccurrences(of: ".app", with: "") }
+            ?? bundleID
+    }
+
+    static func appIcon(_ bundleID: String) -> NSImage? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map { NSWorkspace.shared.icon(forFile: $0.path) }
+    }
+
+    private static func stored(_ key: String) -> [String: NSColor] {
+        let raw = UserDefaults.standard.dictionary(forKey: key) ?? [:]
+        var result: [String: NSColor] = [:]
+        for (bundleID, value) in raw {
+            guard let rgb = value as? [Double], rgb.count == 3 else { continue }
+            result[bundleID] = NSColor(srgbRed: rgb[0], green: rgb[1], blue: rgb[2], alpha: 1)
+        }
+        return result
+    }
+
+    private static func save(_ color: NSColor, for bundleID: String, in key: String) {
         var all = UserDefaults.standard.dictionary(forKey: key) ?? [:]
         all[bundleID] = [Double(color.redComponent), Double(color.greenComponent), Double(color.blueComponent)]
         UserDefaults.standard.set(all, forKey: key)
-        return color
     }
 }
