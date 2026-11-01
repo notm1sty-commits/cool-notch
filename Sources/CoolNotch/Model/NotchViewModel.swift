@@ -222,6 +222,8 @@ final class NotchViewModel {
         motion.jump(to: targetGeometry)
         observeGeometry()
         observeNowPlaying()
+        lastShelfCount = shelf.items.count
+        observeLiveStates()
 
         powerObserver = NotificationCenter.default.addObserver(
             forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main
@@ -435,12 +437,95 @@ final class NotchViewModel {
     /// зарядка → таймер → секундомер → музыка → файлы на полке.
     var activity: LiveActivity? {
         if isChargingFlash { return .charging }
+        // Постоянно видно только то, что идёт сейчас: идущие таймер и секундомер, играющая музыка.
+        // Пауза и полка — несколько секунд после изменения, потом прячутся.
         let clock = Pref.bool(Pref.showClockActivity)
-        if clock, timer.isActive { return .timer }
-        if clock, stopwatch.hasTime { return .stopwatch }
+        if clock, timer.state == .running { return .timer }
+        if clock, stopwatch.isRunning { return .stopwatch }
+        if clock, clockFlash {
+            if timer.state == .paused { return .timer }
+            if stopwatch.hasTime { return .stopwatch }
+        }
         if Pref.bool(Pref.showMusicActivity), nowPlaying.isPlaying, nowPlaying.track != nil { return .music }
-        if Pref.bool(Pref.showShelfActivity), !shelf.items.isEmpty { return .shelf }
+        if Pref.bool(Pref.showShelfActivity), shelfFlash, !shelf.items.isEmpty { return .shelf }
         return nil
+    }
+
+    /// Таймер или секундомер только что поставили на паузу — показываем это несколько секунд.
+    private(set) var clockFlash = false
+    /// На полке изменилось число файлов — показываем, сколько их, несколько секунд.
+    private(set) var shelfFlash = false
+    @ObservationIgnored private var clockFlashTask: Task<Void, Never>?
+    @ObservationIgnored private var shelfFlashTask: Task<Void, Never>?
+    /// Изменилось, пока чёлка была открыта, — покажем, когда она свернётся.
+    @ObservationIgnored private var clockFlashPending = false
+    @ObservationIgnored private var shelfFlashPending = false
+    @ObservationIgnored private var lastShelfCount = 0
+    @ObservationIgnored private var lastTimerState = TimerService.State.idle
+    @ObservationIgnored private var lastStopwatchRunning = false
+    private static let flashDuration: Duration = .seconds(4)
+
+    private func observeLiveStates() {
+        withObservationTracking {
+            _ = shelf.items.count
+            _ = timer.state
+            _ = stopwatch.isRunning
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                self?.liveStatesChanged()
+                self?.observeLiveStates()
+            }
+        }
+    }
+
+    private func liveStatesChanged() {
+        let count = shelf.items.count
+        if count != lastShelfCount {
+            lastShelfCount = count
+            if count == 0 {
+                shelfFlashPending = false
+                hideShelfFlash()
+            } else if isOpen {
+                shelfFlashPending = true
+            } else {
+                flashShelf()
+            }
+        }
+        var paused = false
+        if timer.state != lastTimerState {
+            paused = timer.state == .paused
+            lastTimerState = timer.state
+        }
+        if stopwatch.isRunning != lastStopwatchRunning {
+            paused = paused || (!stopwatch.isRunning && stopwatch.hasTime)
+            lastStopwatchRunning = stopwatch.isRunning
+        }
+        if paused {
+            if isOpen { clockFlashPending = true } else { flashClock() }
+        }
+    }
+
+    private func flashClock() {
+        clockFlash = true
+        clockFlashTask?.cancel()
+        clockFlashTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.flashDuration) } catch { return }
+            self?.clockFlash = false
+        }
+    }
+
+    private func flashShelf() {
+        shelfFlash = true
+        shelfFlashTask?.cancel()
+        shelfFlashTask = Task { [weak self] in
+            do { try await Task.sleep(for: Self.flashDuration) } catch { return }
+            self?.shelfFlash = false
+        }
+    }
+
+    private func hideShelfFlash() {
+        shelfFlashTask?.cancel()
+        if shelfFlash { shelfFlash = false }
     }
 
     /// Ширина «ушка» слева и справа от выреза.
@@ -655,6 +740,15 @@ final class NotchViewModel {
         isOpen = false
         isTyping = false
         isDropTargeted = false
+        // Что изменилось, пока чёлка была открыта (положили файл, поставили на паузу), — коротко покажем.
+        if shelfFlashPending {
+            shelfFlashPending = false
+            flashShelf()
+        }
+        if clockFlashPending {
+            clockFlashPending = false
+            flashClock()
+        }
         onClose?()
     }
 

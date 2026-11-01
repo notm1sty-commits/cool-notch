@@ -81,8 +81,8 @@ struct SettingsView: View {
                     }
                     Section("Живые активности по бокам от выреза") {
                         Toggle("Музыка: обложка и эквалайзер", isOn: $showMusic)
-                        Toggle("Таймер и секундомер: время до конца и прошедшее", isOn: $showClock)
-                        Toggle("Полка: сколько файлов ждёт", isOn: $showShelf)
+                        Toggle("Таймер и секундомер, пока идут", isOn: $showClock)
+                        Toggle("Полка: сколько файлов, когда их добавили или убрали", isOn: $showShelf)
                         Toggle("Анимация при подключении зарядки", isOn: $showCharging)
                     }
                 case .look:
