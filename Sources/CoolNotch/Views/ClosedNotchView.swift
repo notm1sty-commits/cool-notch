@@ -456,57 +456,24 @@ private struct BannerHeightKey: PreferenceKey {
     }
 }
 
-/// Сонная батарейка: почти пустая, глаза закрыты, над ней всплывают «z». Для заряда ≤ 10 %.
+/// «Почти разрядился»: системный значок пустой батареи и маленькое «zzz», у которого буквы
+/// по очереди мерцают. Только мерцание — ничего не двигается, поэтому значок появляется
+/// ровно на своём месте вместе со всплывашкой.
 struct SleepyBattery: View {
     var level: Int
 
     var body: some View {
         ZStack {
             Circle().fill(Color.white.opacity(0.08))
-            ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.9), lineWidth: 1.8)
-                    .frame(width: 32, height: 21)
-                Capsule()
-                    .fill(Color.white.opacity(0.9))
-                    .frame(width: 2.5, height: 7)
-                    .offset(x: 17.5)
-                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(Color(red: 1, green: 0.27, blue: 0.23))
-                    .frame(width: max(3, 26 * CGFloat(level) / 100), height: 15)
-                    .frame(width: 26, alignment: .leading)
-                // Лицо: закрытые глаза-дуги и маленький «о»-ротик.
-                HStack(spacing: 7) {
-                    SleepyEye()
-                    SleepyEye()
-                }
-                .offset(y: -1.5)
-                Ellipse()
-                    .stroke(Color.white.opacity(0.9), lineWidth: 1.2)
-                    .frame(width: 3, height: 3.5)
-                    .offset(y: 4.5)
-            }
-            .phaseAnimator([false, true]) { view, breathing in
-                view.scaleEffect(breathing ? 1.04 : 1)
-            } animation: { _ in .easeInOut(duration: 1.6) }
-
-            Text("z")
-                .font(.system(size: 9, weight: .heavy, design: .rounded))
-                .foregroundStyle(.white.opacity(0.8))
-                .phaseAnimator([false, true]) { view, up in
-                    view.offset(x: up ? 17 : 12, y: up ? -18 : -10).opacity(up ? 0 : 1)
-                } animation: { up in up ? .easeOut(duration: 1.4) : .linear(duration: 0.01) }
+            Image(systemName: "battery.0percent")
+                .font(.system(size: 19, weight: .medium))
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(Color(red: 1, green: 0.27, blue: 0.23), .white.opacity(0.85))
+            Image(systemName: "zzz")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white.opacity(0.85))
+                .symbolEffect(.variableColor.iterative.dimInactiveLayers, options: .repeating)
+                .offset(x: 13, y: -13)
         }
-    }
-}
-
-private struct SleepyEye: View {
-    var body: some View {
-        Path { path in
-            // Нижняя дуга (‿) — закрытый сонный глаз.
-            path.addRelativeArc(center: CGPoint(x: 2.5, y: 0.5), radius: 2.5, startAngle: .degrees(20), delta: .degrees(140))
-        }
-        .stroke(Color.white.opacity(0.9), style: StrokeStyle(lineWidth: 1.2, lineCap: .round))
-        .frame(width: 5, height: 3)
     }
 }
