@@ -146,13 +146,13 @@ final class NotchChrome {
         tintLayer.path = closed
         glassMask.path = closed
         contentMask.path = closed
-        // Содержимое колышется ровно вместе с плашкой: масштаб = «текущий размер / целевой»
-        // (та же пружина, тот же отскок), в пределах ±10 %, от верхнего края по центру.
-        // Сам SwiftUI сразу стоит в целевом размере, поэтому отдельной «своей» анимации у него нет.
+        // Содержимое колышется вместе с плашкой, когда та «выплёскивается» за итоговый размер
+        // (момент отскока пружины): масштаб = «текущий / целевой», только больше 1 и не больше +6 %.
+        // Пока плашка только растёт к цели, содержимое не сжимаем — иначе оно дёргается.
         var cx: CGFloat = 1, cy: CGFloat = 1
         if state.jelly, frame.targetWidth > 1, frame.targetHeight > 1 {
-            cx = min(max(g.width / frame.targetWidth, 0.9), 1.1)
-            cy = min(max(g.height / frame.targetHeight, 0.9), 1.1)
+            cx = min(max(g.width / frame.targetWidth, 1), 1.06)
+            cy = min(max(g.height / frame.targetHeight, 1), 1.06)
         }
         if let layer = contentContainer.layer {
             if abs(cx - 1) < 0.001 && abs(cy - 1) < 0.001 {

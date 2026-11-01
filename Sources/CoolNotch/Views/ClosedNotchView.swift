@@ -5,7 +5,9 @@ struct ClosedNotchView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
-        let ear = max(0, (vm.closedSize.width - vm.notchSize.width) / 2)
+        // Ширина «ушей» без прибавки при наведении: содержимое привязано к вырезу и не прыгает,
+        // при наведении чуть подрастает только сама плашка.
+        let ear = vm.earWidth
         HStack(spacing: 0) {
             // Содержимое «ушей» не прижимается к вырезу: отступ со стороны чёлки.
             ZStack { leading }
