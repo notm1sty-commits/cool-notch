@@ -25,6 +25,8 @@ struct BrowserMedia: Decodable, Sendable {
     var position: Double
     var url: String
     var tabTitle: String
+    /// Скорость воспроизведения вкладки (видео на 1.5x, 2x…).
+    var rate: Double?
 }
 
 struct BrowserFetchResult: Sendable {
@@ -54,7 +56,7 @@ final class BrowserMediaSource: @unchecked Sendable {
     ]
 
     // В строках JS только одинарные кавычки — их не нужно экранировать в AppleScript.
-    private static let readJS = "(function(){try{var ms=navigator.mediaSession;var m=ms&&ms.metadata;var e=document.querySelector('video,audio');if(!m&&!e)return '';var art='';if(m&&m.artwork&&m.artwork.length){art=m.artwork[m.artwork.length-1].src;}var playing=(ms&&ms.playbackState==='playing')||(!!e&&!e.paused&&!e.ended);return JSON.stringify({title:(m&&m.title)||document.title||'',artist:(m&&m.artist)||'',album:(m&&m.album)||'',artwork:art||'',playing:!!playing,duration:(e&&isFinite(e.duration))?e.duration:0,position:e?e.currentTime:0,url:location.href,tabTitle:document.title||''});}catch(x){return '';}})()"
+    private static let readJS = "(function(){try{var ms=navigator.mediaSession;var m=ms&&ms.metadata;var e=document.querySelector('video,audio');if(!m&&!e)return '';var art='';if(m&&m.artwork&&m.artwork.length){art=m.artwork[m.artwork.length-1].src;}var playing=(ms&&ms.playbackState==='playing')||(!!e&&!e.paused&&!e.ended);return JSON.stringify({title:(m&&m.title)||document.title||'',artist:(m&&m.artist)||'',album:(m&&m.album)||'',artwork:art||'',playing:!!playing,duration:(e&&isFinite(e.duration))?e.duration:0,position:e?e.currentTime:0,rate:e?e.playbackRate:1,url:location.href,tabTitle:document.title||''});}catch(x){return '';}})()"
 
     private static let toggleJS = "(function(){var e=document.querySelector('video,audio');if(!e)return '';if(e.paused){e.play();}else{e.pause();}return 'ok';})()"
 

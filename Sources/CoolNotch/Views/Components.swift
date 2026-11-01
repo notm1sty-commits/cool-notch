@@ -334,4 +334,3 @@ struct AirDropGlyph: View {
         .frame(width: 20, height: 20)
     }
 }
-}

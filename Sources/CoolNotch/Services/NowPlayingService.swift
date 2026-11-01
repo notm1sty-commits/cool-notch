@@ -58,10 +58,12 @@ struct MediaItem: Identifiable, Equatable {
     var sourceLabel: String
     var sourceIcon: NSImage?
     var isVideo: Bool
+    /// Скорость воспроизведения (1 — обычная, 2 — видео на 2x).
+    var rate: Double = 1
 
     func position(at date: Date) -> Double {
         guard isPlaying else { return elapsed }
-        let value = elapsed + date.timeIntervalSince(timestamp)
+        let value = elapsed + date.timeIntervalSince(timestamp) * rate
         return duration > 0 ? min(value, duration) : value
     }
 
@@ -69,7 +71,7 @@ struct MediaItem: Identifiable, Equatable {
         lhs.id == rhs.id && lhs.title == rhs.title && lhs.subtitle == rhs.subtitle
             && lhs.duration == rhs.duration && lhs.elapsed == rhs.elapsed && lhs.timestamp == rhs.timestamp
             && lhs.isPlaying == rhs.isPlaying && lhs.artwork === rhs.artwork && lhs.backdrop === rhs.backdrop
-            && lhs.sourceLabel == rhs.sourceLabel && lhs.isVideo == rhs.isVideo
+            && lhs.sourceLabel == rhs.sourceLabel && lhs.isVideo == rhs.isVideo && lhs.rate == rhs.rate
     }
 }
 
@@ -104,6 +106,13 @@ private struct MediaCandidate {
     var isLive = true
     /// Когда источник последний раз прислал данные.
     var lastUpdate = Date()
+    /// Скорость воспроизведения: на 2x время в чёлке идёт вдвое быстрее.
+    var rate: Double = 1
+
+    func position(at date: Date) -> Double {
+        let value = elapsed + (isPlaying ? date.timeIntervalSince(elapsedTimestamp) * rate : 0)
+        return track.duration > 0 ? min(value, track.duration) : value
+    }
 }
 
 private struct ArtworkLook {
@@ -170,6 +179,7 @@ final class NowPlayingService {
     private(set) var sourceIcon: NSImage?
     private(set) var elapsed: Double = 0
     private(set) var elapsedTimestamp = Date()
+    private(set) var rate: Double = 1
     private(set) var externalPlayer: ExternalPlayer?
     private(set) var canControlAnyPlayer = false
     private(set) var browserNeedsSetup = false
@@ -259,7 +269,7 @@ final class NowPlayingService {
     func position(at date: Date) -> Double {
         let duration = track?.duration ?? 0
         guard isPlaying else { return elapsed }
-        let value = elapsed + date.timeIntervalSince(elapsedTimestamp)
+        let value = elapsed + date.timeIntervalSince(elapsedTimestamp) * rate
         return duration > 0 ? min(value, duration) : value
     }
 
@@ -391,10 +401,7 @@ final class NowPlayingService {
     /// Сразу показываем результат нажатия, не дожидаясь плеера.
     private func markLocal(_ source: PlayerSource, playing: Bool, at now: Date) {
         guard var candidate = candidates[source] else { return }
-        if candidate.isPlaying {
-            let value = candidate.elapsed + now.timeIntervalSince(candidate.elapsedTimestamp)
-            candidate.elapsed = candidate.track.duration > 0 ? min(value, candidate.track.duration) : value
-        }
+        candidate.elapsed = candidate.position(at: now)
         candidate.elapsedTimestamp = now
         candidate.isPlaying = playing
         candidate.lastActivity = now
@@ -634,7 +641,8 @@ final class NowPlayingService {
         artworkKey: String,
         tabURL: String? = nil,
         tabTitle: String? = nil,
-        pid: pid_t? = nil
+        pid: pid_t? = nil,
+        rate: Double? = nil
     ) -> Bool {
         let now = Date()
         var playing = playing
@@ -664,6 +672,8 @@ final class NowPlayingService {
         }
         candidate.track = newTrack
         candidate.lastUpdate = now
+        // Пока играет, скорость > 0; на паузе система присылает 0 — тогда оставляем прежнюю.
+        if let rate, rate > 0 { candidate.rate = rate }
         candidate.isPlaying = playing
         candidate.elapsed = position
         candidate.elapsedTimestamp = timestamp
@@ -745,6 +755,7 @@ final class NowPlayingService {
         if track != chosen.track { track = chosen.track }
         if elapsed != chosen.elapsed { elapsed = chosen.elapsed }
         if elapsedTimestamp != chosen.elapsedTimestamp { elapsedTimestamp = chosen.elapsedTimestamp }
+        if rate != chosen.rate { rate = chosen.rate }
         if artwork !== chosen.artwork { applyArtwork(chosen.artwork) }
 
         let key = "\(chosen.source.bundleID)|\(chosen.track.title)|\(chosen.track.artist)"
@@ -812,7 +823,8 @@ final class NowPlayingService {
             accent: accent,
             sourceLabel: label,
             sourceIcon: icon,
-            isVideo: isVideo
+            isVideo: isVideo,
+            rate: candidate.rate
         )
     }
 
@@ -961,7 +973,8 @@ final class NowPlayingService {
                 timestamp: Date(),
                 artworkKey: key,
                 tabURL: media.url,
-                tabTitle: media.tabTitle
+                tabTitle: media.tabTitle,
+                rate: media.rate
             )
             if needsArtwork { loadArtwork(for: source, url: media.artwork.isEmpty ? nil : media.artwork, key: key) }
         }
@@ -1018,7 +1031,8 @@ final class NowPlayingService {
                 elapsed: info.elapsed,
                 timestamp: info.timestamp > 0 ? Date(timeIntervalSince1970: info.timestamp) : Date(),
                 artworkKey: key,
-                pid: info.pid > 0 ? info.pid : nil
+                pid: info.pid > 0 ? info.pid : nil,
+                rate: info.rate
             )
             // Подтягиваем вкладку браузера, если её уже знаем из опроса.
             if let kind = source.browserKind, let tab = candidates[.browser(kind)], tab.track.title == info.title {
@@ -1081,8 +1095,7 @@ final class NowPlayingService {
         for (source, candidate) in candidates where !candidate.isLive && candidate.isPlaying {
             guard now.timeIntervalSince(candidate.lastUpdate) > 3 else { continue }
             var paused = candidate
-            let value = paused.elapsed + now.timeIntervalSince(paused.elapsedTimestamp)
-            paused.elapsed = paused.track.duration > 0 ? min(value, paused.track.duration) : value
+            paused.elapsed = paused.position(at: now)
             paused.elapsedTimestamp = now
             paused.isPlaying = false
             candidates[source] = paused
