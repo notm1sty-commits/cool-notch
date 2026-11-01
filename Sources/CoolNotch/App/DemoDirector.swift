@@ -69,7 +69,7 @@ final class DemoDirector {
             duration: 4,
             action: .openApp("com.apple.MobileSMS"),
             expanded: true,
-            glows: true
+            source: "Сообщения"
         ))
         await wait(4.8)
 

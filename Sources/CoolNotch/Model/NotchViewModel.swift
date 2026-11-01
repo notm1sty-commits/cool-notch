@@ -46,6 +46,9 @@ struct NotchBanner: Identifiable, Equatable {
     var kind: Kind = .standard
     /// Пробежать свечением по контуру при появлении.
     var glows = false
+    /// Название приложения для уведомлений — показывается сверху, как на iPhone, вместе со временем.
+    var source: String?
+    var date = Date()
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
@@ -398,7 +401,7 @@ final class NotchViewModel {
         if case .airpods? = banner?.kind {
             return CGSize(width: max(notchSize.width + 300, 480), height: notchSize.height + 72)
         }
-        let extra: CGFloat = banner?.expanded == true ? 18 : 0
+        let extra: CGFloat = (banner?.expanded == true ? 18 : 0) + (banner?.source != nil ? 15 : 0)
         return CGSize(width: max(notchSize.width + 270, 456), height: notchSize.height + 62 + extra)
     }
 
@@ -624,7 +627,8 @@ final class NotchViewModel {
             duration: 5,
             action: .openApp(notification.bundleID),
             expanded: text.count > 44,
-            glows: true
+            source: appName.isEmpty ? nil : appName,
+            date: notification.date
         ))
     }
 

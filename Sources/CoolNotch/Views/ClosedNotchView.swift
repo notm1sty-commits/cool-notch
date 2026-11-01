@@ -125,8 +125,6 @@ struct BannerView: View {
         return icon
     }
 
-    @State var appeared = false
-
     var body: some View {
         Group {
             if case let .airpods(name, levels) = banner.kind {
@@ -138,9 +136,14 @@ struct BannerView: View {
         .foregroundStyle(.white)
         .contentShape(Rectangle())
         .onTapGesture { vm.performBannerAction(banner) }
-        .onAppear {
-            withAnimation(.spring(response: 0.55, dampingFraction: 0.55).delay(0.1)) { appeared = true }
-        }
+    }
+
+    /// «сейчас», «2 мин назад» или время, если давно.
+    static func timeText(_ date: Date) -> String {
+        let seconds = Date().timeIntervalSince(date)
+        if seconds < 60 { return "сейчас" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) мин назад" }
+        return date.formatted(date: .omitted, time: .shortened)
     }
 
     private var standard: some View {
@@ -148,10 +151,20 @@ struct BannerView: View {
             Color.clear.frame(height: vm.notchSize.height)
             HStack(spacing: 13) {
                 icon
-                    .scaleEffect(appeared ? 1 : 0.3)
-                    .rotationEffect(.degrees(appeared ? 0 : -10))
-                    .opacity(appeared ? 1 : 0)
                 VStack(alignment: .leading, spacing: 2) {
+                    if let source = banner.source {
+                        // Как на iPhone: приложение слева, время справа.
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(source)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Theme.tertiaryText)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(Self.timeText(banner.date))
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.tertiaryText)
+                        }
+                    }
                     if banner.icon == .artwork {
                         Text(vm.nowPlaying.items.first?.isVideo == true ? "ВИДЕО" : "СЕЙЧАС ИГРАЕТ")
                             .font(.system(size: 10, weight: .bold))
@@ -162,12 +175,6 @@ struct BannerView: View {
                         Text(banner.title)
                             .font(.system(size: 14, weight: .semibold))
                             .lineLimit(1)
-                        Spacer(minLength: 8)
-                        if case .openApp = banner.action {
-                            Text("сейчас")
-                                .font(.system(size: 11))
-                                .foregroundStyle(Theme.tertiaryText)
-                        }
                     }
                     if let subtitle = banner.subtitle {
                         Text(subtitle)
@@ -215,7 +222,6 @@ struct BannerView: View {
             Image(systemName: name)
                 .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(banner.tint)
-                .symbolEffect(.bounce, value: appeared)
                 .frame(width: 42, height: 42)
                 .glass(21, tint: banner.tint)
         }

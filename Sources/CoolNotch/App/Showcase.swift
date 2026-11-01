@@ -70,7 +70,7 @@ final class Showcase {
             duration: 3.4,
             action: .openNotch,
             expanded: true,
-            glows: true
+            source: "Сообщения"
         ))
         try await wait(4.4)
 
