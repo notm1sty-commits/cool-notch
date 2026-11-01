@@ -193,14 +193,31 @@ final class NotchViewModel {
         }
         nowPlaying.onTrackChange = { [weak self] track in
             guard let self, Pref.bool(Pref.trackBanners), !self.isOpen else { return }
-            self.post(NotchBanner(
-                icon: .artwork,
-                tint: self.nowPlaying.accent,
-                title: track.title,
-                subtitle: track.artist.isEmpty ? self.nowPlaying.sourceName : track.artist,
-                duration: 3.2,
-                action: .openSource
-            ))
+            // Плееры (Яндекс Музыка) присылают название раньше исполнителя — даём им полсекунды.
+            Task { @MainActor [weak self] in
+                if track.artist.isEmpty { try? await Task.sleep(for: .milliseconds(500)) }
+                guard let self, !self.isOpen else { return }
+                let current = self.nowPlaying.track?.title == track.title ? (self.nowPlaying.track ?? track) : track
+                let card = NotchBanner(
+                    icon: .artwork,
+                    tint: self.nowPlaying.accent,
+                    title: current.title,
+                    subtitle: current.artist.isEmpty ? self.nowPlaying.sourceName : current.artist,
+                    duration: 3.2,
+                    action: .openSource
+                )
+                self.post(card)
+                guard current.artist.isEmpty else { return }
+                // Исполнитель пришёл ещё позже — дописываем его в уже показанную всплывашку.
+                for _ in 0..<6 {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    if let artist = self.nowPlaying.track?.artist, !artist.isEmpty,
+                       self.nowPlaying.track?.title == current.title {
+                        self.updateBanner(card.id) { $0.subtitle = artist }
+                        return
+                    }
+                }
+            }
         }
         audio.onChange = { [weak self] device, previous in
             self?.audioDeviceChanged(device, previous: previous)
@@ -414,11 +431,20 @@ final class NotchViewModel {
 
     /// Сколько занимает содержимое текущей всплывашки (оно меряет себя само, см. BannerContentHeight).
     var bannerContentHeight: CGFloat?
+    /// Когда появилась текущая всплывашка — пока она проявляется, наведение её не раскрывает.
+    @ObservationIgnored private var bannerShownAt = Date.distantPast
 
-    /// Ширина всплывашек — компактная, как была раньше (не на всю раскрытую чёлку).
+    /// Естественная ширина строки текущей всплывашки (меряет себя сама, см. BannerIdealWidth).
+    var bannerContentWidth: CGFloat?
+
+    /// Всплывашка обнимает содержимое: строка + по 20 pt с боков, без пустого чёрного по краям.
+    /// Не уже выреза с запасом и не шире раскрытой чёлки (длинный текст обрежется многоточием).
     private var bannerWidth: CGFloat {
-        if case .airpods? = banner?.kind { return max(notchSize.width + 260, 446) }
-        return max(notchSize.width + 270, 456)
+        let minimum = notchSize.width + 80
+        let maximum = openSize.width - 40
+        let fallback: CGFloat = banner?.kind == .standard ? 420 : 400
+        let natural = (bannerContentWidth ?? fallback) + 40
+        return min(max(natural, minimum), maximum)
     }
 
     var bannerSize: CGSize {
@@ -499,7 +525,9 @@ final class NotchViewModel {
             bannerTask?.cancel()
             bannerTask = nil
             guard openTask == nil else { return }
-            let delay = max(0.5, Pref.double(Pref.hoverDelay))
+            // Лок: раскрываем не раньше, чем закончится анимация появления всплывашки.
+            let appearDone = bannerShownAt.addingTimeInterval(0.9).timeIntervalSinceNow
+            let delay = max(0.5, Pref.double(Pref.hoverDelay), appearDone)
             openTask = Task { [weak self] in
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }
                 guard !Task.isCancelled else { return }
@@ -591,6 +619,8 @@ final class NotchViewModel {
 
     private func show(_ newBanner: NotchBanner) {
         bannerContentHeight = nil
+        bannerContentWidth = nil
+        bannerShownAt = Date()
         banner = newBanner
         bannerTask?.cancel()
         bannerTask = Task { [weak self] in

@@ -152,53 +152,60 @@ struct BannerView: View {
     private var standard: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: vm.notchSize.height)
-            HStack(spacing: 13) {
-                icon
-                VStack(alignment: .leading, spacing: 2) {
-                    if let source = banner.source {
-                        // Как на iPhone: приложение слева, время справа.
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(source)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Theme.tertiaryText)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            Text(Self.timeText(banner.date))
-                                .font(.system(size: 11))
-                                .foregroundStyle(Theme.tertiaryText)
-                        }
-                    }
-                    if banner.icon == .artwork {
-                        Text(vm.nowPlaying.items.first?.isVideo == true ? "ВИДЕО" : "СЕЙЧАС ИГРАЕТ")
-                            .font(.system(size: 10, weight: .bold))
-                            .tracking(0.6)
-                            .foregroundStyle(Theme.tertiaryText)
-                    }
+            standardRow
+                .padding(.horizontal, 20)
+                .modifier(BannerContentHeight())
+                .background { standardRow.modifier(BannerIdealWidth()) }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Строка всплывашки: значок, текст, эквалайзер. Ширина всплывашки подгоняется под неё,
+    /// чтобы по бокам не оставалось пустого чёрного места.
+    private var standardRow: some View {
+        HStack(spacing: 13) {
+            icon
+            VStack(alignment: .leading, spacing: 2) {
+                if let source = banner.source {
+                    // Как на iPhone: приложение слева, время справа.
                     HStack(alignment: .firstTextBaseline) {
-                        Text(banner.title)
-                            .font(.system(size: 14, weight: .semibold))
+                        Text(source)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Theme.tertiaryText)
                             .lineLimit(1)
-                    }
-                    if let subtitle = banner.subtitle {
-                        Text(subtitle)
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(Theme.secondaryText)
-                            .lineLimit(banner.expanded ? 2 : 1)
-                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 8)
+                        Text(Self.timeText(banner.date))
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.tertiaryText)
                     }
                 }
                 if banner.icon == .artwork {
-                    EqualizerView(
-                        color: vm.nowPlaying.accentNSColor,
-                        isPlaying: vm.nowPlaying.isPlaying,
-                        lowPower: vm.lowPower
-                    )
-                    .frame(width: 22, height: 14)
+                    Text(vm.nowPlaying.items.first?.isVideo == true ? "ВИДЕО" : "СЕЙЧАС ИГРАЕТ")
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(0.6)
+                        .foregroundStyle(Theme.tertiaryText)
+                }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(banner.title)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
+                }
+                if let subtitle = banner.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.secondaryText)
+                        .lineLimit(banner.expanded ? 2 : 1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .padding(.horizontal, 20)
-            .modifier(BannerContentHeight())
-            Spacer(minLength: 0)
+            if banner.icon == .artwork {
+                EqualizerView(
+                    color: vm.nowPlaying.accentNSColor,
+                    isPlaying: vm.nowPlaying.isPlaying,
+                    lowPower: vm.lowPower
+                )
+                .frame(width: 22, height: 14)
+            }
         }
     }
 
@@ -244,27 +251,32 @@ struct AirPodsCard: View {
     var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: vm.notchSize.height)
-            HStack(spacing: 12) {
-                Image(systemName: deviceSymbol)
-                    .font(.system(size: 17, weight: .regular))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(.system(size: 14, weight: .semibold))
-                        .lineLimit(1)
-                    Text("Подключено")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(Theme.secondaryText)
-                }
-                Spacer(minLength: 8)
-                batteries
-            }
-            .padding(.horizontal, 18)
-            .modifier(BannerContentHeight())
+            row
+                .padding(.horizontal, 20)
+                .modifier(BannerContentHeight())
+                .background { row.modifier(BannerIdealWidth()) }
             Spacer(minLength: 0)
+        }
+    }
+
+    private var row: some View {
+        HStack(spacing: 12) {
+            Image(systemName: deviceSymbol)
+                .font(.system(size: 17, weight: .regular))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(Color.white.opacity(0.08)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                Text("Подключено")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Theme.secondaryText)
+            }
+            batteries
+                .padding(.leading, 10)
         }
     }
 
@@ -370,6 +382,37 @@ struct BannerContentHeight: ViewModifier {
                     }
                 }
             }
+    }
+}
+
+/// Меряет «естественную» ширину строки всплывашки (невидимая копия без ограничений),
+/// чтобы форма чёлки обнимала содержимое, а не оставляла пустые края.
+struct BannerIdealWidth: ViewModifier {
+    @Environment(NotchViewModel.self) var vm
+
+    func body(content: Content) -> some View {
+        content
+            .fixedSize()
+            .hidden()
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: BannerWidthKey.self, value: geo.size.width)
+                }
+            )
+            .onPreferenceChange(BannerWidthKey.self) { width in
+                MainActor.assumeIsolated {
+                    if width > 0, abs((vm.bannerContentWidth ?? 0) - width) > 0.5 {
+                        vm.bannerContentWidth = width
+                    }
+                }
+            }
+    }
+}
+
+private struct BannerWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
