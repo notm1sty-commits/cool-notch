@@ -20,7 +20,7 @@ struct NotesView: View {
             }
         }
         .padding(12)
-        .surface(highlighted: focused)
+        .glass(Theme.cardRadius, highlighted: focused)
         .overlay(alignment: .bottomTrailing) {
             if !text.isEmpty {
                 HStack(spacing: 2) {

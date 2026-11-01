@@ -43,6 +43,9 @@ clang -dynamiclib -fobjc-arc -fmodules -O2 -Wall \
 codesign --force --sign - "$APP_DIR/Contents/Frameworks/libCoolNotchMediaBridge.dylib"
 cp Resources/media-bridge.pl "$APP_DIR/Contents/Resources/media-bridge.pl"
 
+# Картинки для демо-режима (--demo), около 200 КБ.
+cp -R Resources/Demo "$APP_DIR/Contents/Resources/Demo"
+
 echo "▸ Иконка"
 ICONSET="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$ICONSET"

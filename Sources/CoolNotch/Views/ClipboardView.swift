@@ -73,7 +73,7 @@ private struct ClipRow: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .surface(12, highlighted: hovering)
+            .glass(14, highlighted: hovering)
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableButtonStyle(scale: 0.97))

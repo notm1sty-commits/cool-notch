@@ -35,7 +35,7 @@ struct ShelfView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .surface(highlighted: vm.isDropTargeted)
+            .glass(Theme.cardRadius, highlighted: vm.isDropTargeted)
             .animation(Theme.content, value: shelf.items)
             .animation(Theme.micro, value: vm.isDropTargeted)
         }
@@ -107,7 +107,7 @@ private struct AirDropZone: View {
         }
         .padding(.horizontal, 6)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .surface(highlighted: targeted || (hovering && hasItems))
+        .glass(Theme.cardRadius, highlighted: targeted || (hovering && hasItems), tint: targeted ? Color(red: 0.35, green: 0.68, blue: 1) : .white)
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         .onTapGesture { if hasItems { vm.shelf.airDropAll() } }
         .onHover { hovering = $0 }

@@ -12,6 +12,10 @@ enum Pref {
     static let browserMusic = "browserMusic"
     static let systemNowPlaying = "systemNowPlaying"
     static let systemNotifications = "systemNotifications"
+    static let notchStyle = "notchStyle"
+    static let fxChromatic = "fxChromatic"
+    static let fxEdgeGlow = "fxEdgeGlow"
+    static let fx3D = "fx3D"
     static let clipboardHistory = "clipboardHistory"
     static let openOnFileDrag = "openOnFileDrag"
     static let timerSound = "timerSound"
@@ -30,6 +34,10 @@ enum Pref {
             browserMusic: false,
             systemNowPlaying: true,
             systemNotifications: true,
+            notchStyle: "glass",
+            fxChromatic: true,
+            fxEdgeGlow: true,
+            fx3D: true,
             clipboardHistory: true,
             openOnFileDrag: true,
             timerSound: true,

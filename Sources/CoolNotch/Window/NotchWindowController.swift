@@ -23,15 +23,21 @@ final class NotchWindowController {
         self.isDemo = demo
     }
 
+    /// В демо-режиме рисуем всё в двойном масштабе — запись выглядит как на Retina-экране.
+    private var scale: CGFloat { isDemo ? 2 : 1 }
+    private var windowSize: CGSize { CGSize(width: Self.windowSize.width * scale, height: Self.windowSize.height * scale) }
+
     func show() {
-        let panel = NotchPanel(contentRect: CGRect(origin: .zero, size: Self.windowSize))
+        let panel = NotchPanel(contentRect: CGRect(origin: .zero, size: windowSize))
         let root = NotchRootView()
+            .scaleEffect(scale, anchor: .top)
             .environment(viewModel)
             .environment(\.colorScheme, .dark)
         let hosting = NotchHostingView(rootView: root)
         hosting.sizingOptions = []
         panel.contentView = hosting
         self.panel = panel
+        viewModel.motion.host = hosting
 
         viewModel.onClose = { [weak self] in self?.resignKeyIfNeeded() }
 
@@ -57,7 +63,7 @@ final class NotchWindowController {
 
     func reposition() {
         guard let panel, let screen = NSScreen.notchScreen else { return }
-        let size = Self.windowSize
+        let size = windowSize
         let frame = CGRect(
             x: screen.frame.midX - size.width / 2,
             y: screen.frame.maxY - size.height,

@@ -86,13 +86,26 @@ final class BrowserMediaSource: @unchecked Sendable {
         }, completion: completion)
     }
 
-    func togglePlayback(in kind: BrowserKind) {
-        runner.run(Self.script(for: kind, js: Self.toggleJS, collectAll: false))
+    enum Action {
+        case toggle
+        case pause
+        case seek(Double)
+
+        var js: String {
+            switch self {
+            case .toggle:
+                return "(function(){var e=document.querySelector('video,audio');if(!e)return '';if(e.paused){e.play();}else{e.pause();}return 'ok';})()"
+            case .pause:
+                return "(function(){var e=document.querySelector('video,audio');if(!e)return '';e.pause();return 'ok';})()"
+            case .seek(let seconds):
+                return "(function(){var e=document.querySelector('video,audio');if(!e)return '';e.currentTime=\(String(format: "%.2f", seconds));return 'ok';})()"
+            }
+        }
     }
 
-    func seek(in kind: BrowserKind, to seconds: Double) {
-        let js = "(function(){var e=document.querySelector('video,audio');if(!e)return '';e.currentTime=\(String(format: "%.2f", seconds));return 'ok';})()"
-        runner.run(Self.script(for: kind, js: js, collectAll: false))
+    /// Выполняет действие во вкладке с этим адресом (или в первой подходящей, если адрес неизвестен).
+    func perform(_ action: Action, in kind: BrowserKind, url: String?) {
+        runner.run(Self.script(for: kind, js: action.js, collectAll: false, exactURL: url))
     }
 
     /// Переключает браузер на вкладку с этим медиа (по адресу или заголовку) и выводит его вперёд.
@@ -135,8 +148,13 @@ final class BrowserMediaSource: @unchecked Sendable {
 
     /// Обходит вкладки с музыкальными сайтами и выполняет в них JS.
     /// collectAll: собрать ответы всех вкладок; иначе — остановиться на первой, где JS вернул «ok».
-    private static func script(for kind: BrowserKind, js: String, collectAll: Bool) -> String {
-        let condition = hosts.map { "u contains \"\($0)\"" }.joined(separator: " or ")
+    private static func script(for kind: BrowserKind, js: String, collectAll: Bool, exactURL: String? = nil) -> String {
+        let condition: String
+        if let exactURL, !exactURL.isEmpty {
+            condition = "u is \"\(escape(exactURL))\""
+        } else {
+            condition = hosts.map { "u contains \"\($0)\"" }.joined(separator: " or ")
+        }
         let command = kind == .safari ? "do JavaScript \"\(js)\" in t" : "execute t javascript \"\(js)\""
         let onResult = collectAll
             ? "if r is not missing value and r is not \"\" then set out to out & r & linefeed"

@@ -26,6 +26,12 @@ struct NotchBanner: Identifiable, Equatable {
         case openApp(String)
     }
 
+    enum Kind: Equatable {
+        case standard
+        /// Большая карточка «наушники подключены» с зарядом.
+        case airpods(name: String, levels: AirPodsLevels?)
+    }
+
     let id = UUID()
     var icon: Icon
     var tint: Color
@@ -35,6 +41,9 @@ struct NotchBanner: Identifiable, Equatable {
     var action: Action = .openNotch
     /// Две строки текста (для уведомлений с длинным текстом).
     var expanded = false
+    var kind: Kind = .standard
+    /// Пробежать свечением по контуру при появлении.
+    var glows = false
 }
 
 enum NotchTab: String, CaseIterable, Identifiable {
@@ -86,6 +95,22 @@ final class NotchViewModel {
     private(set) var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     var isDropTargeted = false
 
+    // Оформление (зеркало настроек, чтобы интерфейс сразу реагировал)
+    private(set) var glassStyle = true
+    private(set) var fxChromatic = true
+    private(set) var fxEdgeGlow = true
+    private(set) var fx3D = true
+
+    /// Свечение контура: меняется счётчик — пробегает новая волна.
+    private(set) var glowTrigger = 0
+    private(set) var glowGreen = false
+
+    /// Какая карточка карусели плеера сейчас выбрана.
+    private(set) var deckIndex = 0
+
+    /// Геометрия чёлки на пружинной физике.
+    let motion: NotchMotion
+
     // MARK: Services
 
     let nowPlaying: NowPlayingService
@@ -109,8 +134,11 @@ final class NotchViewModel {
     @ObservationIgnored private var bannerQueue: [NotchBanner] = []
     @ObservationIgnored private var powerObserver: NSObjectProtocol?
     @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
+    @ObservationIgnored private var lastPresentationKind = 0
+    @ObservationIgnored private var lastHovering = false
 
     init() {
+        motion = NotchMotion()
         nowPlaying = NowPlayingService()
         battery = BatteryService()
         shelf = ShelfStore()
@@ -166,8 +194,12 @@ final class NotchViewModel {
             Task { @MainActor in
                 guard let self else { return }
                 self.notifications.update(enabled: Pref.bool(Pref.systemNotifications))
+                self.reloadPrefs()
             }
         }
+        reloadPrefs()
+        motion.jump(to: targetGeometry)
+        observeGeometry()
 
         powerObserver = NotificationCenter.default.addObserver(
             forName: Notification.Name.NSProcessInfoPowerStateDidChange, object: nil, queue: .main
@@ -180,7 +212,84 @@ final class NotchViewModel {
         }
     }
 
+    // MARK: Appearance
+
+    func reloadPrefs() {
+        let glass = UserDefaults.standard.string(forKey: Pref.notchStyle) != "black"
+        if glass != glassStyle { glassStyle = glass }
+        let chromatic = Pref.bool(Pref.fxChromatic)
+        if chromatic != fxChromatic { fxChromatic = chromatic }
+        let edge = Pref.bool(Pref.fxEdgeGlow)
+        if edge != fxEdgeGlow { fxEdgeGlow = edge }
+        let depth = Pref.bool(Pref.fx3D)
+        if depth != fx3D { fx3D = depth }
+    }
+
+    /// Стекло видно, когда чёлка раскрыта или показывает уведомление.
+    var isGlassActive: Bool {
+        glassStyle && presentation != .closed
+    }
+
+    func glow(green: Bool) {
+        glowGreen = green
+        glowTrigger += 1
+    }
+
+    // MARK: Media deck
+
+    var selectedItem: MediaItem? {
+        let items = nowPlaying.items
+        guard !items.isEmpty else { return nil }
+        return items[min(max(deckIndex, 0), items.count - 1)]
+    }
+
+    func selectDeck(_ index: Int) {
+        let clamped = min(max(index, 0), max(nowPlaying.items.count - 1, 0))
+        if clamped != deckIndex { deckIndex = clamped }
+    }
+
     // MARK: Geometry
+
+    var targetGeometry: NotchMotion.Geometry {
+        let size = shapeSize
+        return NotchMotion.Geometry(width: size.width, height: size.height, bottomRadius: bottomRadius, shoulder: topRadius)
+    }
+
+    /// Следим за целевой геометрией и запускаем пружины с подходящим «характером».
+    private func observeGeometry() {
+        withObservationTracking {
+            _ = targetGeometry
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.geometryChanged()
+                self.observeGeometry()
+            }
+        }
+    }
+
+    private func geometryChanged() {
+        let kind: Int
+        switch presentation {
+        case .closed: kind = 0
+        case .banner: kind = 1
+        case .open: kind = 2
+        }
+        let feel: NotchMotion.Feel
+        if kind == 2, lastPresentationKind != 2 {
+            feel = .open
+        } else if lastPresentationKind == 2, kind != 2 {
+            feel = .close
+        } else if kind == 0, isHovering != lastHovering {
+            feel = .hover
+        } else {
+            feel = .morph
+        }
+        lastPresentationKind = kind
+        lastHovering = isHovering
+        let reduced = lowPower || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        motion.animate(to: targetGeometry, feel: feel, reduced: reduced)
+    }
 
     func updateScreen(notchSize: CGSize, hasNotch: Bool) {
         if self.notchSize != notchSize { self.notchSize = notchSize }
@@ -221,12 +330,15 @@ final class NotchViewModel {
     }
 
     var bannerSize: CGSize {
+        if case .airpods? = banner?.kind {
+            return CGSize(width: max(notchSize.width + 250, 440), height: notchSize.height + 150)
+        }
         let extra: CGFloat = banner?.expanded == true ? 18 : 0
-        return CGSize(width: max(notchSize.width + 260, 440), height: notchSize.height + 56 + extra)
+        return CGSize(width: max(notchSize.width + 270, 456), height: notchSize.height + 62 + extra)
     }
 
     var openSize: CGSize {
-        CGSize(width: max(640, notchSize.width + 450), height: notchSize.height + 176)
+        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + 206)
     }
 
     var shapeSize: CGSize {
@@ -239,8 +351,8 @@ final class NotchViewModel {
 
     var topRadius: CGFloat {
         switch presentation {
-        case .open: return 14
-        case .banner: return 10
+        case .open: return glassStyle ? 0 : 14
+        case .banner: return glassStyle ? 0 : 10
         case .closed: return 6
         }
     }
@@ -248,7 +360,9 @@ final class NotchViewModel {
     var bottomRadius: CGFloat {
         switch presentation {
         case .open: return Theme.openRadius
-        case .banner: return 26
+        case .banner:
+            if case .airpods? = banner?.kind { return 36 }
+            return 28
         case .closed: return isHovering ? 14 : 11
         }
     }
@@ -337,6 +451,7 @@ final class NotchViewModel {
     func open(pinned: Bool = false) {
         if pinned { isPinned = true }
         guard !isOpen else { return }
+        deckIndex = 0
         bannerTask?.cancel()
         bannerQueue.removeAll()
         banner = nil
@@ -372,6 +487,7 @@ final class NotchViewModel {
 
     private func show(_ newBanner: NotchBanner) {
         banner = newBanner
+        if newBanner.glows { glow(green: false) }
         bannerTask?.cancel()
         bannerTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(newBanner.duration)) } catch { return }
@@ -400,6 +516,7 @@ final class NotchViewModel {
     func flashCharging() {
         isChargingFlash = true
         pulse += 1
+        glow(green: true)
         chargingTask?.cancel()
         chargingTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(3.5)) } catch { return }
@@ -437,7 +554,8 @@ final class NotchViewModel {
             subtitle: title.isEmpty ? nil : (text.isEmpty ? appName : text),
             duration: 5,
             action: .openApp(notification.bundleID),
-            expanded: text.count > 44
+            expanded: text.count > 44,
+            glows: true
         ))
     }
 
@@ -452,6 +570,8 @@ final class NotchViewModel {
                 title: previous.name,
                 subtitle: "Отключено · звук через динамики Mac"
             ))
+        } else if device.name.localizedCaseInsensitiveContains("airpods") || device.name.localizedCaseInsensitiveContains("beats") {
+            showAirPods(name: device.name)
         } else {
             post(NotchBanner(
                 icon: .symbol(device.symbol),
@@ -459,6 +579,34 @@ final class NotchViewModel {
                 title: device.name,
                 subtitle: device.isWireless ? "Подключено" : "Звук переключён сюда"
             ))
+        }
+    }
+
+    /// Карточка наушников: сразу показываем, заряд подставляем, как только macOS его отдаст.
+    func showAirPods(name: String, levels: AirPodsLevels? = nil) {
+        let card = NotchBanner(
+            icon: .symbol("airpodspro"),
+            tint: .white,
+            title: name,
+            subtitle: "Подключено к этому Mac",
+            duration: 5,
+            kind: .airpods(name: name, levels: levels),
+            glows: true
+        )
+        post(card)
+        guard levels == nil else { return }
+        AirPodsBattery.fetch(deviceName: name) { [weak self] levels in
+            guard let self, let levels else { return }
+            self.updateBanner(card.id) { $0.kind = .airpods(name: name, levels: levels) }
+        }
+    }
+
+    private func updateBanner(_ id: UUID, _ change: (inout NotchBanner) -> Void) {
+        if var current = banner, current.id == id {
+            change(&current)
+            banner = current
+        } else if let index = bannerQueue.firstIndex(where: { $0.id == id }) {
+            change(&bannerQueue[index])
         }
     }
 

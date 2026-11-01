@@ -1,31 +1,36 @@
 import AppKit
 import SwiftUI
 
-/// Демо-режим (`--demo`): сам проигрывает сценарий — музыка, баннеры, раскрытие, вкладки.
-/// Нужен, чтобы записать видео интерфейса на машине без плееров и без курсора.
+/// Демо-режим (`--demo`): сам проигрывает сценарий — музыка и видео, уведомления, раскрытие,
+/// карусель источников, вкладки, AirPods, зарядка. Нужен, чтобы записать видео интерфейса
+/// на машине без плееров и без курсора (см. scripts/record-demo.sh).
 @MainActor
 final class DemoDirector {
     private let vm: NotchViewModel
+    private var backdrop: NSWindow?
 
     init(viewModel: NotchViewModel) {
         vm = viewModel
     }
-
-    private var backdrop: NSWindow?
 
     func run() {
         showBackdrop()
         Task { await play() }
     }
 
-    /// Обои под чёлкой, чтобы на записи было видно её форму.
+    private static func image(_ name: String) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "jpg", subdirectory: "Demo") else { return nil }
+        return NSImage(contentsOf: url)
+    }
+
+    /// Обои под чёлкой, чтобы на записи было видно форму и стекло.
     private func showBackdrop() {
         guard let screen = NSScreen.main else { return }
         let window = NSWindow(contentRect: screen.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
         window.ignoresMouseEvents = true
-        window.contentView = NSHostingView(rootView: DemoWallpaper())
+        window.contentView = NSHostingView(rootView: DemoWallpaper(image: Self.image("wall")))
         window.setFrame(screen.frame, display: true)
         window.orderFrontRegardless()
         backdrop = window
@@ -35,89 +40,82 @@ final class DemoDirector {
         try? await Task.sleep(for: .seconds(seconds))
     }
 
+    private func media(musicTitle: String, musicSubtitle: String, musicArt: String, musicElapsed: Double) -> [DemoMedia] {
+        [
+            DemoMedia(source: .music, title: musicTitle, subtitle: musicSubtitle, artwork: Self.image(musicArt), duration: 187, elapsed: musicElapsed, playing: true, url: nil),
+            DemoMedia(source: .browser(.chrome), title: "Как приготовить идеальный эспрессо", subtitle: "Coffee Lab · 1,2 млн просмотров", artwork: Self.image("v1"), duration: 642, elapsed: 252, playing: false, url: "https://www.youtube.com/watch?v=coolnotch"),
+            DemoMedia(source: .spotify, title: "Ночной город", subtitle: "Neon Drive — Afterglow", artwork: Self.image("c2"), duration: 214, elapsed: 96, playing: false, url: nil),
+        ]
+    }
+
     private func play() async {
         prepareData()
         await wait(3)  // запись видео стартует чуть позже приложения
 
         // 1. Заиграла музыка — по бокам выреза появляются обложка и эквалайзер.
-        vm.nowPlaying.showDemo(
-            track: NowPlayingTrack(title: "Ночной город", artist: "Neon Drive", album: "Afterglow", duration: 214),
-            artwork: Self.artwork(colors: [NSColor(red: 0.98, green: 0.36, blue: 0.55, alpha: 1), NSColor(red: 0.45, green: 0.2, blue: 0.95, alpha: 1)]),
-            playing: true,
-            elapsed: 48
-        )
+        vm.nowPlaying.showDemo(media(musicTitle: "Летний дождь", musicSubtitle: "Aurora Lane — Seasons", musicArt: "c1", musicElapsed: 41))
         await wait(3)
 
         // 2. Смена трека — баннер выезжает из чёлки.
-        vm.nowPlaying.showDemo(
-            track: NowPlayingTrack(title: "Летний дождь", artist: "Aurora Lane", album: "Seasons", duration: 187),
-            artwork: Self.artwork(colors: [NSColor(red: 1, green: 0.67, blue: 0.25, alpha: 1), NSColor(red: 0.95, green: 0.28, blue: 0.4, alpha: 1)]),
-            playing: true,
-            elapsed: 3
-        )
-        await wait(4.5)
+        vm.nowPlaying.showDemo(media(musicTitle: "Северное сияние", musicSubtitle: "Polar Echo — Lumen", musicArt: "c3", musicElapsed: 2))
+        await wait(4.2)
 
-        // 2б. Пришло сообщение — системное уведомление в чёлке.
+        // 3. Пришло сообщение — уведомление в чёлке со свечением контура.
         vm.post(NotchBanner(
             icon: .app("com.apple.MobileSMS"),
             tint: .white,
             title: "Аня",
-            subtitle: "Ты видел новую чёлку? Выглядит прямо как на iPhone, очень плавно!",
+            subtitle: "Ты видел новую чёлку? Выглядит прямо как на iPhone, всё такое плавное 😍",
             duration: 4,
             action: .openApp("com.apple.MobileSMS"),
-            expanded: true
+            expanded: true,
+            glows: true
         ))
-        await wait(5)
+        await wait(4.8)
 
-        // 3. Наведение: чёлка чуть подрастает, затем раскрывается.
+        // 4. Наведение: чёлка чуть подрастает, затем раскрывается стеклянной панелью.
         vm.demoHover(true)
         await wait(0.6)
         vm.open()
-        await wait(2.2)
+        await wait(2.4)
 
-        // 4. Запускаем таймер.
+        // 5. Таймер.
         withAnimation(Theme.content) { vm.timer.start(minutes: 25) }
+        await wait(1.8)
+
+        // 6. Листаем источники: YouTube на паузе, Spotify, обратно.
+        vm.selectDeck(1)
+        await wait(2.2)
+        vm.selectDeck(2)
+        await wait(2)
+        vm.selectDeck(1)
+        await wait(1.4)
+
+        // 7. Запускаем видео — музыка встаёт на паузу, видео становится главным.
+        vm.nowPlaying.setDemoPlaying(.browser(.chrome), true)
+        vm.selectDeck(0)
+        await wait(2.4)
+        vm.nowPlaying.setDemoPlaying(.music, true)
         await wait(2)
 
-        // 5. Листаем вкладки.
+        // 8. Вкладки.
         for tab in [NotchTab.shelf, .clipboard, .notes, .home] {
             withAnimation(Theme.content) { vm.select(tab) }
-            await wait(2)
+            await wait(1.7)
         }
 
-        // 6. Пауза и снова воспроизведение.
-        vm.nowPlaying.setDemoPlaying(false)
-        await wait(1.4)
-        vm.nowPlaying.setDemoPlaying(true)
-        await wait(1.2)
-
-        // 6б. Включили видео на YouTube — оно запущено последним, поэтому теперь в чёлке оно.
-        vm.nowPlaying.showDemo(
-            track: NowPlayingTrack(title: "Как приготовить идеальный эспрессо", artist: "Coffee Lab · YouTube", album: "", duration: 642),
-            artwork: Self.artwork(colors: [NSColor(red: 0.95, green: 0.2, blue: 0.2, alpha: 1), NSColor(red: 0.35, green: 0.08, blue: 0.08, alpha: 1)]),
-            playing: true,
-            elapsed: 95,
-            source: .browser(.chrome)
-        )
-        await wait(2.5)
-
-        // 7. Курсор ушёл — чёлка сворачивается обратно в «ушки» с таймером.
+        // 9. Курсор ушёл — чёлка сворачивается в «ушки» с таймером.
         vm.demoHover(false)
         vm.close()
-        await wait(2.5)
+        await wait(2.4)
 
-        // 8. Подключились AirPods.
-        vm.post(NotchBanner(
-            icon: .symbol("airpodspro"),
-            tint: Color(red: 0.35, green: 0.68, blue: 1),
-            title: "AirPods Pro",
-            subtitle: "Подключено"
-        ))
-        await wait(5)
+        // 10. Подключились AirPods.
+        vm.showAirPods(name: "AirPods Pro", levels: AirPodsLevels(left: 92, right: 88, caseLevel: 34, single: nil))
+        await wait(5.6)
 
-        // 9. Подключили зарядку.
+        // 11. Подключили зарядку.
         vm.flashCharging()
-        await wait(4.5)
+        await wait(4.2)
 
         print("DEMO_DONE")
         fflush(stdout)
@@ -139,54 +137,27 @@ final class DemoDirector {
 
         vm.clipboard.insertDemo([
             ("https://music.yandex.ru/album/123", "Safari"),
-            ("Встреча в 19:30 у кофейни", "Telegram"),
+            ("Встреча в 19:30 у кофейни", "Сообщения"),
             ("hello@coolnotch.app", "Почта"),
-            ("4276 1600 0000 0000", "Заметки"),
+            ("Купить: молоко, кофе, бананы", "Заметки"),
         ])
 
-        UserDefaults.standard.set("Купить: молоко, кофе, бананы\nПозвонить маме в 18:00\nДоделать презентацию 🎯", forKey: Pref.notesText)
-    }
-
-    /// Обложка-заглушка: градиент и нота.
-    static func artwork(colors: [NSColor]) -> NSImage {
-        let size = NSSize(width: 300, height: 300)
-        return NSImage(size: size, flipped: false) { rect in
-            NSGradient(colors: colors)?.draw(in: rect, angle: -45)
-            if let symbol = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)?
-                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 120, weight: .semibold)) {
-                let tinted = NSImage(size: symbol.size, flipped: false) { symbolRect in
-                    symbol.draw(in: symbolRect)
-                    NSColor.white.withAlphaComponent(0.9).set()
-                    symbolRect.fill(using: .sourceAtop)
-                    return true
-                }
-                let origin = NSPoint(x: rect.midX - tinted.size.width / 2, y: rect.midY - tinted.size.height / 2)
-                tinted.draw(at: origin, from: .zero, operation: .sourceOver, fraction: 1)
-            }
-            return true
-        }
+        UserDefaults.standard.set("Купить: молоко, кофе, бананы\nПозвонить маме в 18:00\nДоделать презентацию к пятнице", forKey: Pref.notesText)
     }
 }
 
-/// Обои для записи демо: мягкий градиент в духе macOS.
+/// Обои для записи демо.
 private struct DemoWallpaper: View {
+    let image: NSImage?
+
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [Color(red: 0.16, green: 0.22, blue: 0.52), Color(red: 0.55, green: 0.32, blue: 0.75), Color(red: 0.98, green: 0.62, blue: 0.55)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Circle()
-                .fill(Color(red: 0.3, green: 0.75, blue: 0.95).opacity(0.55))
-                .frame(width: 700, height: 700)
-                .blur(radius: 140)
-                .offset(x: -300, y: -220)
-            Circle()
-                .fill(Color(red: 1, green: 0.45, blue: 0.6).opacity(0.5))
-                .frame(width: 600, height: 600)
-                .blur(radius: 140)
-                .offset(x: 320, y: 160)
+            LinearGradient(colors: [Color(red: 0.08, green: 0.12, blue: 0.36), Color(red: 0.48, green: 0.26, blue: 0.6)], startPoint: .top, endPoint: .bottom)
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
         }
         .ignoresSafeArea()
     }

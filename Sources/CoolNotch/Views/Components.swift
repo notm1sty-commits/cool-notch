@@ -30,7 +30,7 @@ struct ArtworkView: View {
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: corner, style: .continuous)
-                .strokeBorder(Theme.hairline, lineWidth: 0.5)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)
         )
         .animation(Theme.content, value: image)
     }

@@ -24,11 +24,8 @@ struct ExpandedNotchView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, Theme.padding)
-            .padding(.top, 10)
-            .padding(.bottom, Theme.padding)
-        }
-        .background(alignment: .topLeading) {
-            if !simple { AmbientGlow() }
+            .padding(.top, 12)
+            .padding(.bottom, 16)
         }
         .foregroundStyle(.white)
     }
@@ -44,111 +41,109 @@ struct ExpandedNotchView: View {
     }
 }
 
-/// Едва заметное цветное свечение от обложки — как в «Музыке» на iPhone, но тише.
-private struct AmbientGlow: View {
-    @Environment(NotchViewModel.self) var vm
-
-    var body: some View {
-        let player = vm.nowPlaying
-        ZStack {
-            if vm.tab == .home, player.track != nil, let artwork = player.artwork {
-                Image(nsImage: artwork)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: 240, height: 240)
-                    .blur(radius: 70)
-                    .opacity(player.isPlaying ? 0.3 : 0.15)
-                    .offset(x: -40, y: 10)
-                    .transition(.opacity)
-            }
-        }
-        .allowsHitTesting(false)
-        .animation(Theme.content, value: player.artwork)
-        .animation(Theme.content, value: player.isPlaying)
-        .animation(Theme.content, value: vm.tab)
-    }
-}
-
 private struct HeaderBar: View {
     @Environment(NotchViewModel.self) var vm
-    @Namespace var tabNamespace
 
     var body: some View {
         HStack(spacing: 0) {
-            HStack(spacing: 2) {
-                ForEach(NotchTab.allCases) { tab in
-                    TabButton(tab: tab, namespace: tabNamespace)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            LiquidTabs()
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Место под аппаратный вырез.
-            Color.clear.frame(width: vm.notchSize.width + 12)
+            Color.clear.frame(width: vm.notchSize.width + 16)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 9) {
                 if vm.battery.hasBattery {
                     BatteryBadge()
                 }
-                IconButton(systemName: "gearshape.fill", size: 10.5, help: "Настройки") {
+                Button {
                     vm.openSettings?()
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                        .glass(13)
                 }
+                .buttonStyle(PressableButtonStyle())
+                .help("Настройки")
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(.horizontal, 18)
+        .padding(.horizontal, 16)
     }
 }
 
-private struct TabButton: View {
+/// Вкладки со стеклянной «каплей»: ведущий край двигается быстрее, задний догоняет.
+private struct LiquidTabs: View {
     @Environment(NotchViewModel.self) var vm
-    let tab: NotchTab
-    let namespace: Namespace.ID
+    @State var leftEdge: CGFloat = 0
+    @State var rightEdge: CGFloat = LiquidTabs.width
+    @State var hovered: NotchTab?
 
-    @State var hovering = false
+    static let width: CGFloat = 34
 
     var body: some View {
-        let selected = vm.tab == tab
-        let badge = tab == .shelf ? vm.shelf.items.count : 0
+        HStack(spacing: 0) {
+            ForEach(NotchTab.allCases) { tab in
+                Button {
+                    select(tab)
+                } label: {
+                    Image(systemName: tab.icon)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(vm.tab == tab ? 1 : (hovered == tab ? 0.8 : 0.5)))
+                        .frame(width: Self.width, height: 22)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .topTrailing) { badge(for: tab) }
+                }
+                .buttonStyle(PressableButtonStyle(scale: 0.88))
+                .help(tab.title)
+                .onHover { inside in
+                    withAnimation(Theme.micro) { hovered = inside ? tab : (hovered == tab ? nil : hovered) }
+                }
+            }
+        }
+        .background(alignment: .leading) {
+            Capsule()
+                .fill(Color.white.opacity(0.2))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.25), radius: 4, y: 2)
+                .frame(width: max(22, rightEdge - leftEdge), height: 22)
+                .offset(x: leftEdge)
+        }
+        .padding(2)
+        .glass(13)
+        .onAppear {
+            let x = CGFloat(vm.tab.index) * Self.width
+            leftEdge = x
+            rightEdge = x + Self.width
+        }
+    }
 
-        Button {
-            withAnimation(Theme.content) { vm.select(tab) }
-        } label: {
-            ZStack {
-                if selected {
-                    Capsule()
-                        .fill(Color.white.opacity(0.14))
-                        .matchedGeometryEffect(id: "selected-tab", in: namespace)
-                } else if hovering {
-                    Capsule()
-                        .fill(Color.white.opacity(0.06))
-                }
-                Image(systemName: tab.icon)
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(selected ? 1 : (hovering ? 0.8 : 0.42)))
-            }
-            .frame(width: 34, height: 22)
-            .overlay(alignment: .topTrailing) {
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 8, weight: .bold))
-                        .monospacedDigit()
-                        .contentTransition(.numericText())
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 3.5)
-                        .frame(minWidth: 12, minHeight: 12)
-                        .background(Capsule().fill(Color.white))
-                        .offset(x: 3, y: -3)
-                        .transition(.scale.combined(with: .opacity))
-                }
-            }
-            .contentShape(Capsule())
+    private func select(_ tab: NotchTab) {
+        guard tab != vm.tab else { return }
+        let forward = tab.index > vm.tab.index
+        let x = CGFloat(tab.index) * Self.width
+        let fast = Animation.spring(response: 0.22, dampingFraction: 0.8)
+        let slow = Animation.spring(response: 0.38, dampingFraction: 0.78)
+        withAnimation(forward ? fast : slow) { rightEdge = x + Self.width }
+        withAnimation(forward ? slow : fast) { leftEdge = x }
+        withAnimation(Theme.content) { vm.select(tab) }
+    }
+
+    @ViewBuilder
+    private func badge(for tab: NotchTab) -> some View {
+        let count = tab == .shelf ? vm.shelf.items.count : 0
+        if count > 0 {
+            Text("\(count)")
+                .font(.system(size: 8, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(.black)
+                .padding(.horizontal, 3.5)
+                .frame(minWidth: 12, minHeight: 12)
+                .background(Capsule().fill(Color.white))
+                .offset(x: 1, y: -3)
+                .transition(.scale.combined(with: .opacity))
         }
-        .buttonStyle(PressableButtonStyle(scale: 0.9))
-        .help(tab.title)
-        .onHover { value in
-            withAnimation(Theme.micro) { hovering = value }
-        }
-        .animation(Theme.hover, value: badge)
     }
 }
 
@@ -157,23 +152,23 @@ private struct BatteryBadge: View {
 
     var body: some View {
         let battery = vm.battery
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Text("\(battery.level)%")
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
-                .foregroundStyle(Theme.secondaryText)
+                .foregroundStyle(.white.opacity(0.8))
             Image(systemName: battery.symbolName)
-                .font(.system(size: 13))
+                .font(.system(size: 14))
                 .symbolRenderingMode(.palette)
-                .foregroundStyle(tint(for: battery), Theme.tertiaryText)
+                .foregroundStyle(tint(for: battery), .white.opacity(0.45))
         }
         .animation(Theme.micro, value: battery.level)
         .help(helpText(for: battery))
     }
 
     private func tint(for battery: BatteryService) -> Color {
-        if battery.isCharging || battery.isPluggedIn { return .green }
+        if battery.isCharging || battery.isPluggedIn { return Theme.green }
         if battery.level <= 20 { return .red }
         return .white
     }

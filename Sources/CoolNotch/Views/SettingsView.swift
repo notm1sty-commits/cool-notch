@@ -15,6 +15,10 @@ struct SettingsView: View {
     @AppStorage(Pref.browserMusic) var browserMusic = false
     @AppStorage(Pref.systemNowPlaying) var systemNowPlaying = true
     @AppStorage(Pref.systemNotifications) var systemNotifications = true
+    @AppStorage(Pref.notchStyle) var notchStyle = "glass"
+    @AppStorage(Pref.fxChromatic) var fxChromatic = true
+    @AppStorage(Pref.fxEdgeGlow) var fxEdgeGlow = true
+    @AppStorage(Pref.fx3D) var fx3D = true
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
     @AppStorage(Pref.openOnFileDrag) var openOnFileDrag = true
     @AppStorage(Pref.timerSound) var timerSound = true
@@ -25,6 +29,21 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("Оформление") {
+                Picker("Стиль раскрытой чёлки", selection: $notchStyle) {
+                    Text("Стекло").tag("glass")
+                    Text("Чёрная").tag("black")
+                }
+                .pickerStyle(.segmented)
+                Toggle("RGB-кромка при движении («3D-кино»)", isOn: $fxChromatic)
+                Toggle("Свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
+                Toggle("3D-обложки и карусель", isOn: $fx3D)
+                Text("В режиме энергосбережения и при включённом «Уменьшить движение» эффекты упрощаются автоматически.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Section("Поведение") {
                 Toggle("Запускать при входе в систему", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, enabled in
@@ -110,7 +129,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 640)
+        .frame(width: 500, height: 700)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controlAccess = AXIsProcessTrusted()
         }
