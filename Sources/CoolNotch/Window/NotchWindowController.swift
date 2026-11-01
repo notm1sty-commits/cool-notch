@@ -170,11 +170,12 @@ final class NotchWindowController {
     /// Трёхпальцевый свайп (если он не занят переключением рабочих столов) или горизонтальная
     /// прокрутка двумя пальцами над открытой чёлкой на вкладке «Главная».
     private func handleSwipe(_ event: NSEvent) -> NSEvent? {
-        guard viewModel.isOpen, viewModel.tab == .home,
-              viewModel.hoverZone.contains(NSEvent.mouseLocation) else { return event }
+        guard viewModel.isOpen, viewModel.hoverZone.contains(NSEvent.mouseLocation) else { return event }
+        // На полке с длинным рядом файлов горизонтальная прокрутка нужна самому ряду.
+        if viewModel.tab == .shelf, viewModel.shelf.items.count > 5 { return event }
         if event.type == .swipe {
             guard event.deltaX != 0 else { return event }
-            viewModel.swipeDeck(next: event.deltaX > 0)
+            viewModel.swipe(next: event.deltaX > 0)
             return nil
         }
         guard event.hasPreciseScrollingDeltas else { return event }  // только трекпад
@@ -190,7 +191,7 @@ final class NotchWindowController {
                 swipeFired = true
                 // Пальцы влево — следующая карточка, как перелистывание на iPhone.
                 let fingersLeft = event.isDirectionInvertedFromDevice ? swipeAccumulator < 0 : swipeAccumulator > 0
-                viewModel.swipeDeck(next: fingersLeft)
+                viewModel.swipe(next: fingersLeft)
             }
         case .ended, .cancelled:
             swipeAccumulator = 0

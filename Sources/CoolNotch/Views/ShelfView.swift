@@ -18,24 +18,32 @@ struct ShelfView: View {
                         .onTapGesture { vm.pickFilesForShelf() }
                         .transition(.opacity)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(shelf.items) { item in
-                                ShelfItemTile(item: item, shelf: shelf)
-                                    .transition(RevealTransition(scale: 0.8, offset: .zero))
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(maxHeight: .infinity)
-                    }
-                    .overlay(alignment: .topTrailing) {
+                    // Кнопки — отдельной строкой над файлами, чтобы не налезать на крестики удаления.
+                    VStack(spacing: 2) {
                         HStack(spacing: 6) {
+                            Text("Полка").sectionLabelStyle()
+                            Text("\(shelf.items.count)")
+                                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                                .foregroundStyle(Theme.tertiaryText)
+                                .contentTransition(.numericText())
+                            Spacer()
                             AddButton { vm.pickFilesForShelf() }
                             CapsuleButton(title: "Очистить", systemImage: nil) {
                                 withAnimation(Theme.content) { shelf.clear() }
                             }
                         }
-                        .padding(8)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 8)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 4) {
+                                ForEach(shelf.items) { item in
+                                    ShelfItemTile(item: item, shelf: shelf)
+                                        .transition(RevealTransition(scale: 0.8, offset: .zero))
+                                }
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(maxHeight: .infinity)
+                        }
                     }
                     .transition(.opacity)
                 }
@@ -50,31 +58,30 @@ struct ShelfView: View {
     }
 }
 
+/// Пустая полка — как карточка AirDrop: без пунктира, текст не меняется, при наведении
+/// значок становится плюсиком (нажми — выбери файлы).
 private struct DropHint: View {
     var active: Bool
     var hovering = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
-                .strokeBorder(
-                    Color.white.opacity(active ? 0.55 : (hovering ? 0.23 : 0.14)),
-                    style: StrokeStyle(lineWidth: 1, dash: [5, 5])
-                )
-                .padding(0.5)
-            PlaceholderView(
-                title: active ? "Отпускай" : (hovering ? "Нажми, чтобы выбрать файлы" : "Перетащи файлы на чёлку"),
-                subtitle: hovering && !active ? "или перетащи их сюда — подождут, пока не понадобятся" : "Они подождут здесь, пока не понадобятся",
-                fill: .white.opacity(active ? 0.16 : (hovering ? 0.13 : 0.08)),
-                layout: .horizontal
-            ) {
-                Image(systemName: active ? "tray.and.arrow.down.fill" : (hovering ? "plus" : "tray"))
-                    .font(.system(size: 16, weight: hovering && !active ? .semibold : .medium))
-                    .foregroundStyle(.white.opacity(active || hovering ? 1 : 0.62))
-                    .contentTransition(.symbolEffect(.replace))
+        PlaceholderView(
+            title: "Перетащи файлы на чёлку",
+            subtitle: "или выбери нужные",
+            fill: .white.opacity(active ? 0.16 : (hovering ? 0.13 : 0.08)),
+            layout: .horizontal
+        ) {
+            ZStack {
+                Image(systemName: active ? "tray.and.arrow.down.fill" : "tray")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(active ? 1 : 0.62))
+                    .opacity(hovering && !active ? 0 : 1)
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .opacity(hovering && !active ? 1 : 0)
             }
         }
-        // Без масштаба: раньше рамка увеличивалась и вылезала за фон блока, а пружина дёргалась.
         .animation(.easeOut(duration: 0.15), value: active)
         .animation(.easeOut(duration: 0.15), value: hovering)
     }
@@ -111,7 +118,7 @@ private struct AirDropZone: View {
         let picking = hovering && !targeted
         PlaceholderView(
             title: "AirDrop",
-            subtitle: "Брось файл сюда",
+            subtitle: "Перетащи или выбери файл",
             fill: Color(red: 0.12, green: 0.5, blue: 1),
             layout: .vertical
         ) {

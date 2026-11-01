@@ -126,16 +126,19 @@ private struct LiquidTabs: View {
             leftEdge = x
             rightEdge = x + Self.width
         }
+        // «Капля» едет за выбранной вкладкой, как бы её ни сменили: кликом или свайпом.
+        .onChange(of: vm.tab) { old, new in
+            let forward = new.index > old.index
+            let x = CGFloat(new.index) * Self.width
+            let fast = Animation.spring(response: 0.22, dampingFraction: 0.8)
+            let slow = Animation.spring(response: 0.38, dampingFraction: 0.78)
+            withAnimation(forward ? fast : slow) { rightEdge = x + Self.width }
+            withAnimation(forward ? slow : fast) { leftEdge = x }
+        }
     }
 
     private func select(_ tab: NotchTab) {
         guard tab != vm.tab else { return }
-        let forward = tab.index > vm.tab.index
-        let x = CGFloat(tab.index) * Self.width
-        let fast = Animation.spring(response: 0.22, dampingFraction: 0.8)
-        let slow = Animation.spring(response: 0.38, dampingFraction: 0.78)
-        withAnimation(forward ? fast : slow) { rightEdge = x + Self.width }
-        withAnimation(forward ? slow : fast) { leftEdge = x }
         withAnimation(Theme.content) { vm.select(tab) }
     }
 

@@ -333,11 +333,25 @@ final class NotchViewModel {
         }
     }
 
-    /// Свайп по чёлке: следующая или предыдущая карточка плеера.
-    func swipeDeck(next: Bool) {
-        let target = deckIndex + (next ? 1 : -1)
-        guard target >= 0, target < nowPlaying.items.count else { return }
-        selectDeck(target)
+    /// Свайп по чёлке — сквозное перелистывание: на «Главной» сначала карточки плеера,
+    /// а за последней (или перед первой) — соседние разделы: Главная → Полка → Буфер → Заметки.
+    func swipe(next: Bool) {
+        let step = next ? 1 : -1
+        if tab == .home {
+            let target = deckIndex + step
+            if target >= 0, target < nowPlaying.items.count {
+                selectDeck(target)
+                swipeFeedback()
+                return
+            }
+        }
+        let tabs = NotchTab.allCases
+        guard let index = tabs.firstIndex(of: tab), tabs.indices.contains(index + step) else { return }
+        withAnimation(Theme.content) { select(tabs[index + step]) }
+        swipeFeedback()
+    }
+
+    private func swipeFeedback() {
         if Pref.bool(Pref.haptics) {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
