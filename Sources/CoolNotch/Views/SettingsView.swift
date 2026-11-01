@@ -52,6 +52,13 @@ struct SettingsView: View {
                 .padding(.top, 30)
                 .padding(.bottom, 6)
 
+            if page == .general {
+                FoxBanner()
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+                    .transition(.opacity)
+            }
+
             Form {
                 switch page {
                 case .general:

@@ -100,3 +100,7 @@ Sources/CoolNotch/
   2. Экспортируй его в `.p12` с паролем, затем `base64 -i cert.p12 | pbcopy`.
   3. В репозитории: Settings → Secrets and variables → Actions → секреты `MACOS_CERT_P12` (вставить скопированное) и `MACOS_CERT_PASSWORD`.
   После этого CI подписывает каждую сборку одним сертификатом, и разрешения переживают обновления.
+
+## Благодарности
+
+- Пиксельная лиса в настройках — [Fox (animated)](https://opengameart.org/content/fox-animated) от hdst, лицензия CC0.
