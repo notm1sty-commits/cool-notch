@@ -52,6 +52,20 @@ private struct MediaDeck: View {
                     }
                 }
                 .frame(width: geo.size.width, height: cardHeight)
+                .mask {
+                    // Соседние карточки исчезают у краёв, а не наезжают на таймер.
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0),
+                            .init(color: .black, location: 0.05),
+                            .init(color: .black, location: 0.95),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                    .padding(.vertical, -40)
+                }
                 .contentShape(Rectangle())
                 .gesture(dragGesture(cardWidth: cardWidth, count: items.count))
                 .overlay(alignment: .leading) {
@@ -144,7 +158,7 @@ private struct DeckCardEffect: ViewModifier, Animatable {
             .rotation3DEffect(.degrees(depth ? -offset * 32 : 0), axis: (x: 0, y: 1, z: 0), perspective: 0.55)
             .scaleEffect(1 - amount * 0.06)
             .blur(radius: depth && amount > 0.01 ? amount * 5 : 0)
-            .opacity(1 - amount * 0.9)
+            .opacity(1 - amount)
             .offset(x: CGFloat(offset) * spacing)
             .allowsHitTesting(abs(offset) < 0.5)
             .zIndex(1 - amount)
@@ -179,7 +193,7 @@ private struct MediaCard: View {
 
     // MARK: Artwork
 
-    private var artSize: CGSize { item.isVideo ? CGSize(width: 150, height: 84) : CGSize(width: 112, height: 112) }
+    private var artSize: CGSize { item.isVideo ? CGSize(width: 140, height: 79) : CGSize(width: 112, height: 112) }
     private var artRadius: CGFloat { item.isVideo ? 13 : 18 }
 
     private var artwork: some View {
@@ -336,7 +350,7 @@ private struct MediaCard: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             controlButton(item.isVideo ? "gobackward.10" : "backward.fill", help: item.isVideo ? "Назад на 10 секунд" : "Предыдущий трек") {
                 vm.nowPlaying.skip(item, forward: false)
             }
@@ -369,7 +383,9 @@ private struct MediaCard: View {
                         .contentTransition(.symbolEffect(.replace))
                     Text(opened ? "Открыто" : "Открыть")
                         .font(.system(size: 11.5, weight: .semibold))
+                        .lineLimit(1)
                 }
+                .fixedSize()
                 .foregroundStyle(opened ? Theme.liveGreen : .white)
                 .padding(.horizontal, 11)
                 .frame(height: 28)

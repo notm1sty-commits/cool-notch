@@ -119,10 +119,12 @@ private struct NotchBackground: View {
 
     var body: some View {
         ZStack {
-            if glass {
+            if vm.glassStyle {
+                // Размытие всегда на месте и только проявляется — без вставки/удаления слоя,
+                // поэтому стекло не «отстаёт» от формы во время анимации.
                 VisualEffectBlur(material: .hudWindow)
-                Theme.glassTint.opacity(0.32)
-                    .transition(.opacity)
+                    .opacity(glass ? 1 : 0)
+                Theme.glassTint.opacity(glass ? 0.16 : 0)
             }
             Color.black.opacity(glass ? 0 : 1)
 
