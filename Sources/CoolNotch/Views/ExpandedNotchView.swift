@@ -173,19 +173,19 @@ private struct BatteryBadge: View {
                 .font(.system(size: 12, weight: .semibold))
                 .monospacedDigit()
                 .contentTransition(.numericText())
-                .foregroundStyle(.white.opacity(0.8))
+                .foregroundStyle(.white.opacity(0.9))
+            // Как в строке меню macOS: значок целиком белый, и при зарядке тоже.
             Image(systemName: battery.symbolName)
                 .font(.system(size: 14))
-                .symbolRenderingMode(.palette)
-                .foregroundStyle(tint(for: battery), .white.opacity(0.45))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(tint(for: battery))
         }
         .animation(Theme.micro, value: battery.level)
         .help(helpText(for: battery))
     }
 
     private func tint(for battery: BatteryService) -> Color {
-        if battery.isCharging || battery.isPluggedIn { return Theme.green }
-        if battery.level <= 20 { return .red }
+        if !battery.isCharging && !battery.isPluggedIn && battery.level <= 20 { return .red }
         return .white
     }
 
