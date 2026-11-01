@@ -4,7 +4,7 @@
 // своим процессам. Поэтому Cool Notch запускает системный /usr/bin/perl, тот
 // загружает эту библиотеку и вызывает coolnotch_bridge_run(). Дальше библиотека:
 //   • пишет в stdout по одной JSON-строке на каждое изменение трека;
-//   • читает из stdin команды: play, pause, toggle, next, prev, seek <сек>, refresh;
+//   • читает из stdin команды: play, pause, toggle, stop, next, prev, seek <сек>, refresh;
 //   • завершается, когда закрывается stdin (то есть когда закрылся Cool Notch).
 //
 // Так чёлка видит любой плеер: приложение Яндекс Музыки, браузер, Spotify и т. д.
@@ -335,6 +335,7 @@ static void handleCommand(NSString *line) {
     if ([name isEqualToString:@"play"]) command = 0;
     else if ([name isEqualToString:@"pause"]) command = 1;
     else if ([name isEqualToString:@"toggle"]) command = 2;
+    else if ([name isEqualToString:@"stop"]) command = 3;
     else if ([name isEqualToString:@"next"]) command = 4;
     else if ([name isEqualToString:@"prev"]) command = 5;
 

@@ -454,6 +454,38 @@ final class NowPlayingService {
         }
     }
 
+    // MARK: - Dismissing a source
+
+    /// Источники, которые убрали крестиком: когда и на каком треке.
+    @ObservationIgnored private var dismissed: [PlayerSource: (at: Date, track: String)] = [:]
+
+    /// Крестик на карточке: убрать источник из чёлки. Он вернётся, когда снова заиграет или
+    /// сменит трек. Если это «главный» плеер системы (например, Telegram с голосовым), ещё и
+    /// останавливаем его — тогда macOS обычно возвращает главным прежний плеер, и им снова
+    /// можно управлять из чёлки.
+    func dismiss(_ item: MediaItem) {
+        guard let candidate = candidates[item.id] else { return }
+        dismissed[item.id] = (Date(), Self.trackIdentity(candidate.track))
+        controlIssues[item.id] = nil
+        if !isDemo, case .system = item.id, candidate.isLive {
+            bridge.send("stop")
+            scheduleRefresh()
+        }
+        recompute()
+    }
+
+    private func isDismissed(_ candidate: MediaCandidate) -> Bool {
+        guard let mark = dismissed[candidate.source] else { return false }
+        // Заиграл снова или сменил трек после крестика — показываем опять.
+        let startedAgain = candidate.isPlaying && candidate.lastActivity > mark.at.addingTimeInterval(1)
+        let otherTrack = Self.trackIdentity(candidate.track) != mark.track
+        if startedAgain || otherTrack {
+            dismissed[candidate.source] = nil
+            return false
+        }
+        return true
+    }
+
     /// Сразу показываем результат нажатия, не дожидаясь плеера.
     private func markLocal(_ source: PlayerSource, playing: Bool, at now: Date) {
         guard var candidate = candidates[source] else { return }
@@ -773,6 +805,7 @@ final class NowPlayingService {
             return key.bundleID
         })
         var visible = candidates.values.filter { candidate in
+            if isDismissed(candidate) { return false }
             if case .system(let id) = candidate.source {
                 return candidate.isLive || !directBundles.contains(id)
             }

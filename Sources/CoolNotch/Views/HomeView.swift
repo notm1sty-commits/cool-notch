@@ -414,6 +414,20 @@ private struct MediaCard: View {
             }
             .buttonStyle(PressableButtonStyle(scale: 0.92))
             .help(item.isVideo ? "Перейти к вкладке с видео" : "Открыть плеер")
+
+            Button {
+                withAnimation(Theme.content) { vm.nowPlaying.dismiss(item) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.white.opacity(0.09)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(PressableButtonStyle(scale: 0.85))
+            .padding(.leading, 4)
+            .help("Убрать из чёлки — вернётся, когда снова заиграет")
         }
     }
 
