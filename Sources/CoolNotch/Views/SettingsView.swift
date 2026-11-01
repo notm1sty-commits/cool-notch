@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage(Pref.trackBanners) var trackBanners = true
     @AppStorage(Pref.deviceBanners) var deviceBanners = true
     @AppStorage(Pref.browserMusic) var browserMusic = false
+    @AppStorage(Pref.systemNowPlaying) var systemNowPlaying = true
     @AppStorage(Pref.clipboardHistory) var clipboardHistory = true
     @AppStorage(Pref.openOnFileDrag) var openOnFileDrag = true
     @AppStorage(Pref.timerSound) var timerSound = true
@@ -52,6 +53,11 @@ struct SettingsView: View {
             }
 
             Section("Музыка") {
+                Toggle("Любой плеер через системный «Что играет»", isOn: $systemNowPlaying)
+                Text("Показывает трек из любого приложения — Яндекс Музыки, браузера, Spotify. Работает через небольшой помощник, который запускается в системном perl: так macOS отдаёт эти данные. Если что-то не так — выключи, и чёлка вернётся к Spotify, Музыке и браузеру.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 Toggle("Музыка из браузера (Яндекс Музыка, YouTube, SoundCloud, VK)", isOn: $browserMusic)
                 if browserMusic {
                     Text("Один раз включи в браузере разрешение:\n• Chrome / Яндекс Браузер / Edge: меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events».\n• Safari: «Настройки» → «Дополнения» → «Показывать функции для веб-разработчиков», затем меню «Разработка» → «Разрешить JavaScript из Apple Events».")

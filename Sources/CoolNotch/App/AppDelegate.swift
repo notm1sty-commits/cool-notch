@@ -7,6 +7,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
+    private var demoDirector: DemoDirector?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Pref.registerDefaults()
@@ -16,11 +17,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewModel.openSettings = { [weak self] in self?.showSettings() }
         self.viewModel = viewModel
 
-        let controller = NotchWindowController(viewModel: viewModel)
+        let isDemo = CommandLine.arguments.contains("--demo")
+        let controller = NotchWindowController(viewModel: viewModel, demo: isDemo)
         controller.show()
         windowController = controller
 
         setupStatusItem()
+        if isDemo {
+            let director = DemoDirector(viewModel: viewModel)
+            demoDirector = director
+            director.run()
+        }
     }
 
     // MARK: - Menu bar

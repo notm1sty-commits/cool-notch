@@ -13,12 +13,15 @@ enum PlayerSource: Equatable {
     case music
     case spotify
     case browser(BrowserKind)
+    /// Системный «Что играет» через помощник MediaBridge (любой плеер). Параметр — bundle id плеера.
+    case system(String)
 
     var bundleID: String {
         switch self {
         case .music: return "com.apple.Music"
         case .spotify: return "com.spotify.client"
         case .browser(let kind): return kind.bundleID
+        case .system(let bundleID): return bundleID
         }
     }
 }
@@ -47,6 +50,14 @@ private enum MediaCommand {
         case .toggle: return .playPause
         case .next: return .next
         case .previous: return .previous
+        }
+    }
+
+    var bridgeCommand: String {
+        switch self {
+        case .toggle: return "toggle"
+        case .next: return "next"
+        case .previous: return "prev"
         }
     }
 
@@ -83,6 +94,10 @@ final class NowPlayingService {
     private let runner: AppleScriptRunner
     private let browser: BrowserMediaSource
     private let mediaRemote: MediaRemote?
+    private let bridge: MediaBridgeProcess
+    @ObservationIgnored private var bridgeHasTrack = false
+    /// Демо-режим: данные подставляет DemoDirector, реальные источники не трогаем.
+    @ObservationIgnored private var isDemo = false
     @ObservationIgnored private var artworkKey: String?
     @ObservationIgnored private var distributedObservers: [DistributedObserver] = []
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -94,7 +109,13 @@ final class NowPlayingService {
         runner = AppleScriptRunner()
         browser = BrowserMediaSource(runner: runner)
         mediaRemote = MediaRemote()
+        bridge = MediaBridgeProcess()
         canControlAnyPlayer = MediaKeys.isTrusted
+
+        bridge.onEvent = { [weak self] event in
+            self?.applyBridge(event)
+        }
+        if Pref.bool(Pref.systemNowPlaying) { bridge.start() }
 
         distributedObservers = [
             DistributedObserver(name: "com.apple.Music.playerInfo") { [weak self] in
@@ -158,6 +179,8 @@ final class NowPlayingService {
         case .browser(let kind)?:
             browser.seek(in: kind, to: seconds)
             scheduleRefresh()
+        case .system?:
+            bridge.send("seek \(String(format: "%.2f", seconds))")
         case nil:
             break
         }
@@ -199,6 +222,25 @@ final class NowPlayingService {
         }
     }
 
+    // MARK: - Demo
+
+    func showDemo(track newTrack: NowPlayingTrack, artwork image: NSImage?, playing: Bool, elapsed position: Double) {
+        isDemo = true
+        bridge.stop()
+        setSource(.music)
+        setArtwork(image)
+        updateTrack(newTrack, playing: playing)
+        elapsed = position
+        elapsedTimestamp = Date()
+    }
+
+    func setDemoPlaying(_ playing: Bool) {
+        let now = Date()
+        elapsed = position(at: now)
+        elapsedTimestamp = now
+        isPlaying = playing
+    }
+
     // MARK: - Commands
 
     private func perform(_ command: MediaCommand) {
@@ -213,6 +255,8 @@ final class NowPlayingService {
             } else {
                 requestControlAccess()
             }
+        case .system?:
+            bridge.send(command.bridgeCommand)
         case nil:
             if MediaKeys.isTrusted {
                 MediaKeys.post(command.key)
@@ -238,6 +282,11 @@ final class NowPlayingService {
     }
 
     private func refreshAll() {
+        guard !isDemo else { return }
+        if bridgeHasTrack {
+            bridge.send("refresh")
+            return
+        }
         for player in [PlayerSource.spotify, .music] where isRunning(player.bundleID) {
             refresh(player)
         }
@@ -245,9 +294,19 @@ final class NowPlayingService {
     }
 
     private func periodicRefresh() {
-        guard !SystemState.screensAsleep else { return }
+        guard !SystemState.screensAsleep, !isDemo else { return }
         let trusted = MediaKeys.isTrusted
         if trusted != canControlAnyPlayer { canControlAnyPlayer = trusted }
+
+        // Включаем/выключаем системный «Что играет» по настройке.
+        let wantsBridge = Pref.bool(Pref.systemNowPlaying)
+        if wantsBridge, !bridge.isEnabled {
+            bridge.start()
+        } else if !wantsBridge, bridge.isEnabled {
+            bridge.stop()
+        }
+        // Пока системный источник знает трек, он сам присылает изменения — опрашивать ничего не нужно.
+        if bridgeHasTrack { return }
 
         switch source {
         case .music?, .spotify?:
@@ -260,7 +319,7 @@ final class NowPlayingService {
             } else {
                 pollBrowsers()   // вдруг музыка заиграла в браузере
             }
-        case .browser?:
+        case .browser?, .system?:
             pollBrowsers()
         case nil:
             // Без активного плеера не опрашиваем часто: Музыка и Spotify сами присылают уведомления.
@@ -313,7 +372,8 @@ final class NowPlayingService {
     }
 
     private func apply(_ snapshot: PlayerSnapshot?, from player: PlayerSource) {
-        guard let snapshot else { return }
+        // Системный «Что играет» главнее: он видит все плееры сразу.
+        guard let snapshot, !bridgeHasTrack, !isDemo else { return }
         let playing = snapshot.state == "playing"
 
         // Не даём плееру на паузе перебить тот, что сейчас играет.
@@ -324,27 +384,11 @@ final class NowPlayingService {
             return
         }
 
-        if source != player {
-            source = player
-            let info = appInfo(for: player.bundleID)
-            sourceName = info.name
-            sourceIcon = info.icon
-        }
-        if isPlaying != playing { isPlaying = playing }
-
-        let newTrack = NowPlayingTrack(
-            title: snapshot.title,
-            artist: snapshot.artist,
-            album: snapshot.album,
-            duration: snapshot.duration
+        setSource(player)
+        updateTrack(
+            NowPlayingTrack(title: snapshot.title, artist: snapshot.artist, album: snapshot.album, duration: snapshot.duration),
+            playing: playing
         )
-        if track != newTrack {
-            let titleChanged = track?.title != newTrack.title || track?.artist != newTrack.artist
-            track = newTrack
-            if titleChanged, playing, Date().timeIntervalSince(launchDate) > 3 {
-                onTrackChange?(newTrack)
-            }
-        }
         elapsed = snapshot.position
         elapsedTimestamp = Date()
 
@@ -352,6 +396,68 @@ final class NowPlayingService {
         if key != artworkKey {
             artworkKey = key
             loadArtwork(for: player, url: snapshot.artworkURL, key: key)
+        }
+    }
+
+    private func setSource(_ player: PlayerSource) {
+        guard source != player else { return }
+        source = player
+        let info = appInfo(for: player.bundleID)
+        sourceName = info.name
+        sourceIcon = info.icon
+    }
+
+    private func updateTrack(_ newTrack: NowPlayingTrack, playing: Bool) {
+        if isPlaying != playing { isPlaying = playing }
+        guard track != newTrack else { return }
+        let titleChanged = track?.title != newTrack.title || track?.artist != newTrack.artist
+        track = newTrack
+        if titleChanged, playing, Date().timeIntervalSince(launchDate) > 3 {
+            onTrackChange?(newTrack)
+        }
+    }
+
+    private func applyBridge(_ event: BridgeEvent) {
+        guard !isDemo else { return }
+        switch event {
+        case .ready:
+            break
+        case .stopped:
+            let had = bridgeHasTrack
+            bridgeHasTrack = false
+            if case .system? = source { clear() }
+            if had { refreshAll() }
+        case .info(let info):
+            guard !info.isEmpty else {
+                let had = bridgeHasTrack
+                bridgeHasTrack = false
+                if case .system? = source { clear() }
+                if had { refreshAll() }  // возвращаемся к Музыке/Spotify/браузеру
+                return
+            }
+            bridgeHasTrack = true
+            let app = info.pid > 0 ? NSRunningApplication(processIdentifier: info.pid) : nil
+            let player = PlayerSource.system(app?.bundleIdentifier ?? "")
+            if source != player {
+                source = player
+                sourceName = app?.localizedName ?? ""
+                sourceIcon = app?.icon
+            }
+            updateTrack(
+                NowPlayingTrack(title: info.title, artist: info.artist, album: info.album, duration: info.duration),
+                playing: info.isPlaying
+            )
+            elapsed = info.elapsed
+            elapsedTimestamp = info.timestamp > 0 ? Date(timeIntervalSince1970: info.timestamp) : Date()
+
+            let key = "system|\(info.title)|\(info.artist)|\(info.album)"
+            if let data = info.artwork {
+                artworkKey = key
+                setArtwork(NSImage(data: data))
+            } else if !info.hasArtwork, artwork != nil {
+                artworkKey = key
+                setArtwork(nil)
+            }
         }
     }
 
@@ -427,6 +533,8 @@ final class NowPlayingService {
                 guard let self, self.artworkKey == key else { return }
                 self.setArtwork(data.flatMap { NSImage(data: $0) })
             }
+        case .system:
+            break
         }
     }
 
@@ -457,7 +565,7 @@ final class NowPlayingService {
                 return {(player state as string), (name of t), (artist of t), (album of t), ((duration of t) / 1000), (player position), (artwork url of t)}
             end tell
             """
-        case .browser:
+        case .browser, .system:
             return ""
         }
     }

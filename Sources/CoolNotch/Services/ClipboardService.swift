@@ -49,6 +49,13 @@ final class ClipboardService {
         entries.removeAll { $0.id == entry.id }
     }
 
+    /// Для демо-режима.
+    func insertDemo(_ items: [(text: String, app: String)]) {
+        entries = items.enumerated().map { index, item in
+            Entry(text: item.text, date: Date().addingTimeInterval(TimeInterval(-index * 240)), appName: item.app)
+        }
+    }
+
     func clear() {
         entries.removeAll()
     }

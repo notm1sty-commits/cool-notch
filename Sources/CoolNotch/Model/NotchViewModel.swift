@@ -348,7 +348,12 @@ final class NotchViewModel {
         }
     }
 
-    private func flashCharging() {
+    /// Для демо-режима: «навести» курсор без мыши.
+    func demoHover(_ hovering: Bool) {
+        if isHovering != hovering { isHovering = hovering }
+    }
+
+    func flashCharging() {
         isChargingFlash = true
         pulse += 1
         chargingTask?.cancel()

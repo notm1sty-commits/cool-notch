@@ -18,8 +18,8 @@ if [[ "${UNIVERSAL:-1}" != "1" ]]; then
 fi
 
 echo "▸ Сборка $APP_NAME $VERSION ($BUILD_NUMBER)"
-swift build -c release "${ARCH_FLAGS[@]}"
-BIN_DIR="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)"
+swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"}
+BIN_DIR="$(swift build -c release ${ARCH_FLAGS[@]+"${ARCH_FLAGS[@]}"} --show-bin-path)"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
@@ -27,6 +27,21 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN_DIR/$EXECUTABLE" "$APP_DIR/Contents/MacOS/$EXECUTABLE"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD_NUMBER/" Resources/Info.plist > "$APP_DIR/Contents/Info.plist"
 printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
+
+echo "▸ Помощник MediaBridge (системный «Что играет»)"
+mkdir -p "$APP_DIR/Contents/Frameworks"
+BRIDGE_ARCHS=(-arch arm64 -arch x86_64)
+if [[ "${UNIVERSAL:-1}" != "1" ]]; then
+  BRIDGE_ARCHS=()
+fi
+clang -dynamiclib -fobjc-arc -fmodules -O2 -Wall \
+  ${BRIDGE_ARCHS[@]+"${BRIDGE_ARCHS[@]}"} -mmacosx-version-min=14.0 \
+  -framework Foundation \
+  -install_name "@rpath/libCoolNotchMediaBridge.dylib" \
+  -o "$APP_DIR/Contents/Frameworks/libCoolNotchMediaBridge.dylib" \
+  Helpers/MediaBridge/MediaBridge.m
+codesign --force --sign - "$APP_DIR/Contents/Frameworks/libCoolNotchMediaBridge.dylib"
+cp Resources/media-bridge.pl "$APP_DIR/Contents/Resources/media-bridge.pl"
 
 echo "▸ Иконка"
 ICONSET="$(mktemp -d)/AppIcon.iconset"

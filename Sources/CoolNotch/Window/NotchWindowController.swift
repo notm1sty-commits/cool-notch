@@ -16,8 +16,11 @@ final class NotchWindowController {
     private var dragStartChangeCount = 0
     private var isFileDragging = false
 
-    init(viewModel: NotchViewModel) {
+    private let isDemo: Bool
+
+    init(viewModel: NotchViewModel, demo: Bool = false) {
         self.viewModel = viewModel
+        self.isDemo = demo
     }
 
     func show() {
@@ -34,7 +37,7 @@ final class NotchWindowController {
 
         reposition()
         panel.orderFrontRegardless()
-        installMonitors()
+        if !isDemo { installMonitors() }
 
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -63,7 +66,14 @@ final class NotchWindowController {
         )
         panel.setFrame(frame, display: true)
         viewModel.windowFrame = frame
-        viewModel.updateScreen(notchSize: screen.notchSize, hasNotch: screen.hasNotch)
+        if isDemo {
+            // На машине без выреза рисуем чёлку как у 14-дюймового MacBook Pro.
+            viewModel.updateScreen(notchSize: CGSize(width: 185, height: 32), hasNotch: true)
+            print("DEMO_WINDOW \(Int(frame.minX)) \(Int(screen.frame.maxY - frame.maxY)) \(Int(frame.width)) \(Int(frame.height)) \(screen.backingScaleFactor) \(Int(screen.frame.width)) \(Int(screen.frame.height))")
+            fflush(stdout)
+        } else {
+            viewModel.updateScreen(notchSize: screen.notchSize, hasNotch: screen.hasNotch)
+        }
     }
 
     // MARK: - Mouse tracking

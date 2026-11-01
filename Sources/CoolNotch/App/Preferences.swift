@@ -10,6 +10,7 @@ enum Pref {
     static let trackBanners = "trackBanners"
     static let deviceBanners = "deviceBanners"
     static let browserMusic = "browserMusic"
+    static let systemNowPlaying = "systemNowPlaying"
     static let clipboardHistory = "clipboardHistory"
     static let openOnFileDrag = "openOnFileDrag"
     static let timerSound = "timerSound"
@@ -26,6 +27,7 @@ enum Pref {
             trackBanners: true,
             deviceBanners: true,
             browserMusic: false,
+            systemNowPlaying: true,
             clipboardHistory: true,
             openOnFileDrag: true,
             timerSound: true,

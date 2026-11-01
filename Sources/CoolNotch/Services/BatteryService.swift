@@ -32,6 +32,14 @@ final class BatteryService {
         }
     }
 
+    /// Для демо-режима (на машине без батареи).
+    func applyDemo(level: Int, charging: Bool) {
+        hasBattery = true
+        self.level = level
+        isCharging = charging
+        isPluggedIn = charging
+    }
+
     var symbolName: String {
         if isCharging || isPluggedIn { return "battery.100percent.bolt" }
         switch level {

@@ -1,0 +1,38 @@
+name: Preview
+
+# Записывает видео демо-режима. Запускается вручную или коммитом с «[preview]» в сообщении.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[preview]')
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build app
+        run: UNIVERSAL=0 ./scripts/build-app.sh
+
+      - name: Allow screen recording (CI only)
+        run: ./scripts/ci-grant-screen-capture.sh
+
+      - name: Install ffmpeg
+        run: brew install ffmpeg
+
+      - name: Record demo
+        run: ./scripts/record-demo.sh
+
+      - name: Upload preview
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoolNotch-preview
+          path: preview/
+          if-no-files-found: warn
