@@ -254,7 +254,6 @@ struct AirPodsCard: View {
             row
                 .padding(.horizontal, 20)
                 .modifier(BannerContentHeight())
-                .background { row.modifier(BannerIdealWidth()) }
             Spacer(minLength: 0)
         }
     }
@@ -271,11 +270,16 @@ struct AirPodsCard: View {
                 Text(name)
                     .font(.system(size: 14, weight: .semibold))
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 Text("Подключено")
                     .font(.system(size: 11.5))
                     .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(1)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Кольца и проценты не сжимаются никогда — если тесно, обрежется название.
             batteries
+                .fixedSize()
                 .padding(.leading, 10)
         }
     }
@@ -343,6 +347,8 @@ private struct BatteryRing: View {
             Text("\(level)%")
                 .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .fixedSize()
         }
         .help(label)
         .onAppear {

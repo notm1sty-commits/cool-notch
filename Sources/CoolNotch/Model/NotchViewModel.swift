@@ -454,6 +454,15 @@ final class NotchViewModel {
     /// Всплывашка обнимает содержимое: строка + по 20 pt с боков, без пустого чёрного по краям.
     /// Не уже выреза с запасом и не шире раскрытой чёлки (длинный текст обрежется многоточием).
     private var bannerWidth: CGFloat {
+        // Карточка наушников: ширина по числу колец заряда — без замеров, чтобы не «сжималась»,
+        // пока заряд ещё грузится.
+        if case .airpods(_, let levels)? = banner?.kind {
+            let rings = [levels?.left, levels?.right, levels?.caseLevel, levels?.left == nil ? levels?.single : nil]
+                .compactMap { $0 }.count
+            let batteries = rings == 0 ? 20 : CGFloat(rings) * 30 + CGFloat(rings - 1) * 12
+            // 20 + значок 44 + 12 + текст ~150 + 10 + кольца + 20
+            return max(notchSize.width + 80, 256 + batteries)
+        }
         let minimum = notchSize.width + 80
         let maximum = openSize.width - 40
         let fallback: CGFloat = banner?.kind == .standard ? 420 : 400
