@@ -66,6 +66,8 @@ struct ClosedNotchView: View {
             HStack(spacing: 6) {
                 Text("\(vm.battery.level)%")
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
                     .contentTransition(.numericText())
                     .foregroundStyle(Theme.green)
                 ChargingBattery(level: vm.battery.level, trigger: vm.pulse)
@@ -226,127 +228,99 @@ struct AirPodsCard: View {
     let name: String
     let levels: AirPodsLevels?
 
-    @State var appeared = false
-
     var body: some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: vm.notchSize.height)
-            HStack(spacing: 10) {
-                art
-                    .frame(width: 140)
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 12) {
+                Image(systemName: deviceSymbol)
+                    .font(.system(size: 26, weight: .regular))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(Color.white.opacity(0.08)))
+                VStack(alignment: .leading, spacing: 2) {
                     Text(name)
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 14, weight: .semibold))
                         .lineLimit(1)
-                    HStack(spacing: 6) {
-                        Circle().fill(Theme.green).frame(width: 6, height: 6)
-                            .shadow(color: Theme.green, radius: 4)
-                        Text("Подключено к этому Mac")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.secondaryText)
-                    }
-                    batteryRow
-                        .padding(.top, 10)
+                    Text("Подключены")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Theme.secondaryText)
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
+                batteries
             }
             .padding(.horizontal, 18)
-            .padding(.bottom, 10)
             .frame(maxHeight: .infinity)
-        }
-        .onAppear {
-            withAnimation(.spring(response: 0.9, dampingFraction: 0.7).delay(0.08)) { appeared = true }
         }
     }
 
-    private var art: some View {
-        ZStack {
-            Ellipse()
-                .fill(Color.black.opacity(0.5))
-                .frame(width: 96, height: 12)
-                .blur(radius: 6)
-                .offset(y: 46)
-            Image(systemName: "airpodspro")
-                .font(.system(size: 76, weight: .regular))
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(
-                    LinearGradient(colors: [.white, Color(red: 0.8, green: 0.81, blue: 0.85)], startPoint: .top, endPoint: .bottom)
-                )
-                .shadow(color: .white.opacity(0.25), radius: 10)
-                .phaseAnimator([false, true]) { view, phase in
-                    view
-                        .rotation3DEffect(.degrees(phase ? 10 : -6), axis: (x: 0, y: 1, z: 0), perspective: 0.6)
-                        .offset(y: phase ? -3 : 0)
-                } animation: { _ in
-                    .easeInOut(duration: 2.5)
-                }
-        }
-        .rotation3DEffect(.degrees(appeared ? 0 : -55), axis: (x: 0.3, y: 1, z: 0), perspective: 0.6)
-        .scaleEffect(appeared ? 1 : 0.7)
-        .opacity(appeared ? 1 : 0)
+    private var deviceSymbol: String {
+        let lower = name.lowercased()
+        if lower.contains("max") { return "airpodsmax" }
+        if lower.contains("pro") { return "airpodspro" }
+        if lower.contains("airpods") { return "airpods" }
+        return "headphones"
     }
 
     @ViewBuilder
-    private var batteryRow: some View {
+    private var batteries: some View {
         if let levels {
-            HStack(spacing: 16) {
+            HStack(spacing: 12) {
                 if let single = levels.single, levels.left == nil {
-                    BatteryCell(symbol: "headphones", level: single, index: 0, appeared: appeared)
+                    BatteryRing(symbol: "headphones", label: "Заряд", level: single)
                 }
                 if let left = levels.left {
-                    BatteryCell(symbol: "airpodpro.left", level: left, index: 0, appeared: appeared)
+                    BatteryRing(symbol: "airpod.left", label: "Л", level: left)
                 }
                 if let right = levels.right {
-                    BatteryCell(symbol: "airpodpro.right", level: right, index: 1, appeared: appeared)
+                    BatteryRing(symbol: "airpod.right", label: "П", level: right)
                 }
                 if let caseLevel = levels.caseLevel {
-                    BatteryCell(symbol: "airpodspro.chargingcase.wireless.fill", level: caseLevel, index: 2, appeared: appeared)
+                    BatteryRing(symbol: "airpodspro.chargingcase.wireless", label: "Футляр", level: caseLevel)
                 }
             }
-            .transition(.opacity.combined(with: .move(edge: .bottom)))
+            .transition(.opacity)
         } else {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Узнаю заряд…")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.tertiaryText)
-            }
+            ProgressView().controlSize(.small)
         }
     }
 }
 
-private struct BatteryCell: View {
+/// Кольцо заряда с процентом под ним — как в карточке AirPods на iPhone.
+private struct BatteryRing: View {
     let symbol: String
+    let label: String
     let level: Int
-    let index: Int
-    let appeared: Bool
 
-    @State var fill: CGFloat = 0
+    @State private var fill: CGFloat = 0
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: symbol)
-                .font(.system(size: 15))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: 18)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\(level)%")
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .monospacedDigit()
-                Capsule()
-                    .fill(Color.white.opacity(0.15))
-                    .frame(width: 30, height: 6)
-                    .overlay(alignment: .leading) {
-                        Capsule()
-                            .fill(level <= 20 ? Color(red: 1, green: 0.84, blue: 0.04) : Theme.green)
-                            .frame(width: 30 * fill, height: 6)
-                    }
+        VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.12), lineWidth: 3)
+                Circle()
+                    .trim(from: 0, to: fill)
+                    .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
             }
+            .frame(width: 30, height: 30)
+            Text("\(level)%")
+                .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.9))
         }
+        .help(label)
         .onAppear {
-            withAnimation(.spring(response: 1.1, dampingFraction: 0.85).delay(0.35 + Double(index) * 0.09)) {
+            withAnimation(.easeOut(duration: 0.8).delay(0.2)) {
                 fill = CGFloat(min(max(level, 0), 100)) / 100
             }
         }
+    }
+
+    private var color: Color {
+        level <= 20 ? Color(red: 1, green: 0.62, blue: 0.04) : Theme.green
     }
 }

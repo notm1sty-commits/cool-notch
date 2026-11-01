@@ -4,9 +4,8 @@ struct HomeView: View {
     @Environment(NotchViewModel.self) var vm
 
     var body: some View {
-        GeometryReader { geo in
-            content(cardHeight: max(100, geo.size.height - 14))
-        }
+        content(cardHeight: Theme.playerHeight)
+            .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private func content(cardHeight: CGFloat) -> some View {
@@ -24,7 +23,7 @@ struct HomeView: View {
                     MediaDeck()
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
             .animation(Theme.content, value: vm.nowPlaying.items.isEmpty)
 
             // Таймер без своей плашки: тонкий разделитель и содержимое по тем же линиям, что и плеер.
@@ -56,7 +55,7 @@ private struct MediaDeck: View {
         let depth = vm.fx3D && !reduceMotion && !vm.lowPower
         GeometryReader { geo in
             let cardWidth = max(220, geo.size.width - 100)
-            let cardHeight = max(100, geo.size.height - 14)
+            let cardHeight = Theme.playerHeight
             VStack(spacing: 4) {
                 ZStack {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -214,6 +213,7 @@ private struct MediaCard: View {
             artwork
             meta
         }
+        .frame(height: Theme.playerHeight)
         .onAppear {
             if depth {
                 withAnimation(.spring(response: 0.45, dampingFraction: 0.9).delay(0.08)) { appeared = true }
@@ -305,7 +305,7 @@ private struct MediaCard: View {
     // MARK: Meta
 
     private var meta: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 if let icon = item.sourceIcon {
                     Image(nsImage: icon)
@@ -328,6 +328,7 @@ private struct MediaCard: View {
                 .fixedSize()
             }
             .font(.system(size: 11, weight: .semibold))
+            .frame(height: 16)
 
             HStack(spacing: 9) {
                 Text(item.title)
@@ -340,23 +341,28 @@ private struct MediaCard: View {
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            .padding(.top, 3)
+            .frame(height: 24)
+            .padding(.top, 4)
 
             if let issue = vm.nowPlaying.controlIssues[item.id] {
                 ControlIssueRow(issue: issue) { vm.nowPlaying.enableBrowserJavaScript(for: item) }
+                    .frame(height: 18, alignment: .leading)
                     .transition(.opacity)
             } else {
                 Text(item.subtitle.isEmpty ? " " : item.subtitle)
                     .font(.system(size: 13.5))
                     .foregroundStyle(Theme.secondaryText)
                     .lineLimit(1)
+                    .frame(height: 18)
             }
 
             ProgressRow(item: item)
-                .padding(.top, 9)
+                .frame(height: 14)
+                .padding(.top, 8)
 
             controls
-                .padding(.top, 5)
+                .frame(height: 32)
+                .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(Theme.content, value: item.isPlaying)
@@ -371,10 +377,10 @@ private struct MediaCard: View {
                 vm.nowPlaying.toggle(item)
             } label: {
                 Image(systemName: item.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 36, height: 36)
-                    .glass(18)
+                    .frame(width: 32, height: 32)
+                    .glass(16)
             }
             .buttonStyle(PressableButtonStyle(scale: 0.84))
             .help(item.isPlaying ? "Пауза" : "Играть")
@@ -761,10 +767,8 @@ private struct TimerCard: View {
                 .buttonStyle(PressableButtonStyle(scale: 0.94))
             }
         }
-        // Карточка плеера по высоте больше своего содержимого и центрирует его: сверху и снизу
-        // по ~6 pt, а «Открыть» (28) стоит в ряду с кнопкой паузы (36) — ещё 4 pt снизу.
-        .padding(.top, 6)
-        .padding(.bottom, 10)
+        // «Открыть» (28) стоит по центру ряда кнопок высотой 32 — его низ на 2 pt выше низа карточки.
+        .padding(.bottom, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .animation(Theme.content, value: timer.isActive)
     }

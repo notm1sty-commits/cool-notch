@@ -13,7 +13,6 @@ enum Pref {
     static let systemNowPlaying = "systemNowPlaying"
     static let systemNotifications = "systemNotifications"
     static let notchStyle = "notchStyle"
-    static let fxEdgeGlow = "fxEdgeGlow"
     static let fx3D = "fx3D"
     static let fxJelly = "fxJelly"
     static let glassTint = "glassTint"
@@ -40,7 +39,6 @@ enum Pref {
             systemNowPlaying: true,
             systemNotifications: true,
             notchStyle: "black",
-            fxEdgeGlow: true,
             fx3D: true,
             fxJelly: true,
             glassTint: 0.6,

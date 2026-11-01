@@ -55,9 +55,6 @@ final class NotchWindowController {
         viewModel.motion.onFrame = { [weak self] frame in
             self?.chrome.render(frame)
         }
-        viewModel.onChromeEvent = { [weak self] event in
-            self?.chrome.fire(event)
-        }
         viewModel.onRequestKeyboard = { [weak self] in
             self?.takeKeyboard()
         }

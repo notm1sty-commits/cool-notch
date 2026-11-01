@@ -61,7 +61,7 @@ final class Showcase {
         ])
         try await wait(3.6)
 
-        step = "Уведомление со свечением"
+        step = "Уведомление"
         vm.post(NotchBanner(
             icon: .app("com.apple.MobileSMS"),
             tint: .white,

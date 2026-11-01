@@ -23,6 +23,9 @@ enum Theme {
     static let padding: CGFloat = 18
     static let cardRadius: CGFloat = 22
     static let chipRadius: CGFloat = 12
+    /// Высота карточки плеера. Строки внутри неё фиксированной высоты, поэтому низ кнопки
+    /// «Открыть» всегда на одной линии (playerHeight − 2) — по ней выровнен «Старт» таймера.
+    static let playerHeight: CGFloat = 124
 }
 
 /// Спокойное появление: прозрачность и лёгкий масштаб от верхнего края, как у Dynamic Island.

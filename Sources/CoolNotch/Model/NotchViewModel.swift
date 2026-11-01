@@ -99,14 +99,11 @@ final class NotchViewModel {
 
     // Оформление (зеркало настроек, чтобы интерфейс сразу реагировал)
     private(set) var glassStyle = true
-    private(set) var fxEdgeGlow = true
     private(set) var fx3D = true
     private(set) var fxJelly = true
     private(set) var glassTint: Double = 0.6
 
     /// Свечение контура: меняется счётчик — пробегает новая волна.
-    private(set) var glowTrigger = 0
-    private(set) var glowGreen = false
 
     /// Какая карточка карусели плеера сейчас выбрана.
     private(set) var deckIndex = 0
@@ -132,7 +129,6 @@ final class NotchViewModel {
     @ObservationIgnored var onClose: (@MainActor () -> Void)?
     @ObservationIgnored var openSettings: (@MainActor () -> Void)?
     /// Разовые эффекты оболочки (свечение, блик) — их рисует Core Animation.
-    @ObservationIgnored var onChromeEvent: (@MainActor (ChromeEvent) -> Void)?
     /// Попросить окно принять ввод с клавиатуры (заметки, таймер).
     @ObservationIgnored var onRequestKeyboard: (@MainActor () -> Void)?
     @ObservationIgnored private var isPinned = false
@@ -239,8 +235,6 @@ final class NotchViewModel {
     func reloadPrefs() {
         let glass = UserDefaults.standard.string(forKey: Pref.notchStyle) != "black"
         if glass != glassStyle { glassStyle = glass }
-        let edge = Pref.bool(Pref.fxEdgeGlow)
-        if edge != fxEdgeGlow { fxEdgeGlow = edge }
         let depth = Pref.bool(Pref.fx3D)
         if depth != fx3D { fx3D = depth }
         let jelly = Pref.bool(Pref.fxJelly)
@@ -257,7 +251,6 @@ final class NotchViewModel {
             open: isOpen,
             glassStyle: glassStyle,
             glassTint: CGFloat(glassTint),
-            edgeEffects: fxEdgeGlow && !reduced,
             jelly: fxJelly && !reduced,
             notchSize: notchSize
         )
@@ -284,11 +277,6 @@ final class NotchViewModel {
         glassStyle && presentation != .closed
     }
 
-    func glow(green: Bool) {
-        glowGreen = green
-        glowTrigger += 1
-        onChromeEvent?(.glow(green: green))
-    }
 
     // MARK: Media deck
 
@@ -374,7 +362,7 @@ final class NotchViewModel {
         switch activity {
         case .music: return notchSize.height + 6
         case .timer: return 64
-        case .charging: return 56
+        case .charging: return 76
         }
     }
 
@@ -390,7 +378,7 @@ final class NotchViewModel {
 
     var bannerSize: CGSize {
         if case .airpods? = banner?.kind {
-            return CGSize(width: max(notchSize.width + 250, 440), height: notchSize.height + 150)
+            return CGSize(width: max(notchSize.width + 300, 480), height: notchSize.height + 72)
         }
         let extra: CGFloat = banner?.expanded == true ? 18 : 0
         return CGSize(width: max(notchSize.width + 270, 456), height: notchSize.height + 62 + extra)
@@ -398,7 +386,7 @@ final class NotchViewModel {
 
     var openSize: CGSize {
         // Высота подогнана под содержимое плеера (обложка, текст, прогресс, кнопки) без пустых полей.
-        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + 180)
+        CGSize(width: max(672, notchSize.width + 480), height: notchSize.height + Theme.playerHeight + 36)
     }
 
     var shapeSize: CGSize {
@@ -548,7 +536,6 @@ final class NotchViewModel {
 
     private func show(_ newBanner: NotchBanner) {
         banner = newBanner
-        if newBanner.glows { glow(green: false) }
         bannerTask?.cancel()
         bannerTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(newBanner.duration)) } catch { return }
@@ -577,7 +564,6 @@ final class NotchViewModel {
     func flashCharging() {
         isChargingFlash = true
         pulse += 1
-        glow(green: true)
         chargingTask?.cancel()
         chargingTask = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(3.5)) } catch { return }
