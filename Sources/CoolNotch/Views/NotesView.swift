@@ -12,7 +12,10 @@ struct NotesView: View {
     @State var drag: NoteDrag?
     /// Где стоит каждая карточка (в координатах списка) — чтобы понять, куда её тянут.
     @State var rowFrames: [UUID: CGRect] = [:]
-    @FocusState var composerFocused: Bool
+    @State var composerFocused = false
+    /// Высота текста в поле (1…3 строки).
+    @State var composerHeight = NoteComposerField.lineHeight
+    @State var focusRequest = 0
 
     struct NoteDrag: Equatable {
         let id: UUID
@@ -85,6 +88,9 @@ struct NotesView: View {
                     subtitle: "Напиши заметку внизу и нажми ↑ или Enter",
                     layout: .horizontal
                 )
+                // Поле ввода выросло на строку-две — подсказка плавно поднимается, чтобы не наезжать.
+                .offset(y: -(composerHeight - NoteComposerField.lineHeight))
+                .animation(Theme.content, value: composerHeight)
                 .allowsHitTesting(false)
                 .transition(.opacity)
             }
@@ -174,22 +180,30 @@ struct NotesView: View {
 
     private func composer(store: NotesStore) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Новая заметка…", text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13))
-                .lineLimit(1...3)
-                .focused($composerFocused)
-                .onSubmit { send(store) }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .glass(16, highlighted: composerFocused)
-                .onChange(of: composerFocused) { _, focused in
-                    if focused { vm.beginTyping() } else { vm.endTyping() }
+            ZStack(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text("Новая заметка…")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Theme.tertiaryText)
+                        .allowsHitTesting(false)
                 }
-                .simultaneousGesture(TapGesture().onEnded {
-                    vm.beginTyping()
-                    composerFocused = true
-                })
+                NoteComposerField(
+                    text: $draft,
+                    height: $composerHeight,
+                    focusRequest: focusRequest,
+                    onSubmit: { send(store) },
+                    onFocusChange: { focused in
+                        composerFocused = focused
+                        if focused { vm.beginTyping() } else { vm.endTyping() }
+                    }
+                )
+                .frame(height: composerHeight)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .glass(16, highlighted: composerFocused)
+            // Поле растёт и уменьшается плавно, подложка всегда ровно вокруг текста.
+            .animation(Theme.micro, value: composerHeight)
 
             Button {
                 send(store)
@@ -212,7 +226,7 @@ struct NotesView: View {
         withAnimation(.spring(response: 0.45, dampingFraction: 0.7)) {
             if store.add(draft) { draft = "" }
         }
-        composerFocused = true
+        focusRequest += 1
     }
 }
 

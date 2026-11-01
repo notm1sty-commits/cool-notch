@@ -26,6 +26,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Приложение переименовано в Halo: если старая обновлялка положила нас как «Cool Notch.app»,
         // переименовываем папку и перезапускаемся уже оттуда.
         if AppRelocation.renameLegacyBundleIfNeeded() { return }
+        // Зажатая клавиша в полях чёлки повторяет букву, а не ждёт меню букв с акцентами
+        // (иначе в заметке нельзя зажать, например, «а» или «.»). Только для Halo.
+        let ownDefaults = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "") ?? [:]
+        if ownDefaults["ApplePressAndHoldEnabled"] == nil {
+            UserDefaults.standard.set(false, forKey: "ApplePressAndHoldEnabled")
+        }
         Pref.registerDefaults()
         SystemState.start()
 

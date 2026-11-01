@@ -28,6 +28,26 @@ final class NotchPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// У приложения в строке меню нет меню «Правка», поэтому ⌘X/⌘C/⌘V/⌘A/⌘Z в полях ввода
+    /// никуда не доходили. Отправляем их полю напрямую. Клавиши — по коду, чтобы работало
+    /// и в русской раскладке (там ⌘V — это «⌘М»).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.type == .keyDown, flags.contains(.command), !flags.contains(.control), !flags.contains(.option) {
+            let action: Selector?
+            switch event.keyCode {
+            case 7: action = #selector(NSText.cut(_:))
+            case 8: action = #selector(NSText.copy(_:))
+            case 9: action = flags.contains(.shift) ? nil : #selector(NSText.paste(_:))
+            case 0: action = #selector(NSText.selectAll(_:))
+            case 6: action = flags.contains(.shift) ? Selector(("redo:")) : Selector(("undo:"))
+            default: action = nil
+            }
+            if let action, NSApp.sendAction(action, to: nil, from: self) { return true }
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 /// Хостинг SwiftUI, который реагирует на первый же клик (без «активации» окна).
