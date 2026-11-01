@@ -143,7 +143,7 @@ struct OnboardingView: View {
             .frame(width: 150, height: 40)
             .background(Capsule().fill(Color(white: 0.1)))
 
-            Text("Cool Notch")
+            Text("Halo")
                 .font(.system(size: 26, weight: .bold, design: .rounded))
             Text("Пара разрешений — и чёлка заработает на полную:\nмузыка и видео, уведомления, скриншоты.")
                 .font(.system(size: 13))
@@ -152,7 +152,7 @@ struct OnboardingView: View {
         }
     }
 
-    private static let staleHint = "Уже включено, а галочки нет? macOS помнит прошлую версию Cool Notch. Нажми «Сбросить», затем включи переключатель ещё раз."
+    private static let staleHint = "Уже включено, а галочки нет? macOS помнит прошлую версию Halo. Нажми «Сбросить», затем включи переключатель ещё раз."
 
     /// Просили больше 4 секунд назад, а доступа всё нет.
     private func stuck(_ asked: Date?, granted: Bool) -> Bool {
@@ -414,7 +414,7 @@ enum Permissions {
         }
     }
 
-    /// Сбрасывает запись о разрешении для Cool Notch. Нужна после обновления ad-hoc сборки:
+    /// Сбрасывает запись о разрешении для Halo. Нужна после обновления ad-hoc сборки:
     /// переключатель в настройках включён, но относится к прежней версии приложения.
     static func reset(_ service: String) async {
         guard let bundleID = Bundle.main.bundleIdentifier else { return }

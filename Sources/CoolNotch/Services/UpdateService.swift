@@ -106,7 +106,7 @@ final class UpdateService {
         guard let release = latest, !isBusy else { return }
         let destination = Bundle.main.bundleURL
         if destination.path.contains("/AppTranslocation/") {
-            state = .failed("Перенеси Cool Notch в папку «Программы» и запусти снова — macOS запускает его из временной копии.")
+            state = .failed("Перенеси Halo в папку «Программы» и запусти снова — macOS запускает его из временной копии.")
             return
         }
         guard FileManager.default.isWritableFile(atPath: destination.deletingLastPathComponent().path) else {
@@ -222,16 +222,21 @@ final class UpdateService {
     /// Отдельный процесс дожидается выхода приложения, подменяет бандл и запускает новую версию.
     private static func relaunch(replacing destination: URL, with app: URL) throws {
         let pid = ProcessInfo.processInfo.processIdentifier
+        // Новая версия встаёт под своим именем (например, Halo.app вместо Cool Notch.app) в ту же папку,
+        // старая убирается.
+        let target = destination.deletingLastPathComponent().appendingPathComponent(app.lastPathComponent)
         let script = """
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
-        DEST=\(shellQuote(destination.path))
+        OLD=\(shellQuote(destination.path))
+        DEST=\(shellQuote(target.path))
         NEW=\(shellQuote(app.path))
-        BACKUP="$DEST.old-$$"
-        mv "$DEST" "$BACKUP" || exit 1
+        BACKUP="$OLD.old-$$"
+        mv "$OLD" "$BACKUP" || exit 1
+        if [ -e "$DEST" ] && [ "$DEST" != "$OLD" ]; then rm -rf "$DEST"; fi
         if /usr/bin/ditto "$NEW" "$DEST"; then
           rm -rf "$BACKUP"
         else
-          rm -rf "$DEST"; mv "$BACKUP" "$DEST"
+          rm -rf "$DEST"; mv "$BACKUP" "$OLD"; DEST="$OLD"
         fi
         /usr/bin/open "$DEST"
         rm -rf \(shellQuote(app.deletingLastPathComponent().path))

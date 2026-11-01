@@ -202,7 +202,7 @@ final class NowPlayingService {
         case enablingJavaScript
         /// Включить автоматически не вышло — подсказываем, где пункт меню.
         case browserJavaScriptManual(BrowserKind)
-        /// macOS не разрешает Cool Notch управлять этим браузером («Автоматизация»).
+        /// macOS не разрешает Halo управлять этим браузером («Автоматизация»).
         case browserAutomation(BrowserKind)
         /// Не нашли вкладку с этим видео.
         case noTab

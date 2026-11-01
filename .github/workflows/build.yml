@@ -24,6 +24,9 @@ jobs:
         run: |
           xcodebuild -version
           swift --version
+          ls -d /Applications/Xcode*.app || true
+          # Окно установщика с фоном и стрелкой.
+          brew install create-dmg || echo "create-dmg не поставился — будет простой DMG"
 
       # Необязательно: постоянный сертификат подписи (секреты MACOS_CERT_P12 в base64 и MACOS_CERT_PASSWORD).
       # С ним macOS не сбрасывает разрешения (Универсальный доступ, Полный доступ к диску) после обновления.
@@ -61,8 +64,8 @@ jobs:
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: CoolNotch-dmg
-          path: .build/app/CoolNotch.dmg
+          name: Halo-dmg
+          path: .build/app/Halo.dmg
           if-no-files-found: error
 
       # Каждая сборка main становится релизом — кнопка «Обновить» в приложении берёт его отсюда.
@@ -72,12 +75,12 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }})
+          name: Halo 0.3.${{ github.run_number }} (build ${{ github.run_number }})
           make_latest: "true"
           generate_release_notes: true
           files: |
-            .build/app/CoolNotch.dmg
-            .build/app/CoolNotch.zip
+            .build/app/Halo.dmg
+            .build/app/Halo.zip
 
       # Сборки из веток разработки — «тестовые» (предварительные) релизы. Их видит кнопка
       # «Обновить», если в настройках включены «Тестовые сборки».
@@ -87,21 +90,21 @@ jobs:
         with:
           tag_name: build-${{ github.run_number }}
           target_commitish: ${{ github.sha }}
-          name: Cool Notch 0.3.${{ github.run_number }} (build ${{ github.run_number }}, тестовая)
+          name: Halo 0.3.${{ github.run_number }} (build ${{ github.run_number }}, тестовая)
           prerelease: true
           make_latest: "false"
           body: Тестовая сборка из ветки ${{ github.ref_name }} (${{ github.sha }}).
           files: |
-            .build/app/CoolNotch.dmg
-            .build/app/CoolNotch.zip
+            .build/app/Halo.dmg
+            .build/app/Halo.zip
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: Cool Notch ${{ github.ref_name }} (build ${{ github.run_number }})
+          name: Halo ${{ github.ref_name }} (build ${{ github.run_number }})
           make_latest: "true"
           files: |
-            .build/app/CoolNotch.dmg
-            .build/app/CoolNotch.zip
+            .build/app/Halo.dmg
+            .build/app/Halo.zip
           generate_release_notes: true

@@ -530,7 +530,7 @@ private struct ControlIssueRow: View {
         case .browserJavaScriptManual:
             return "Не получилось нажать пункт меню автоматически. В браузере: «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events» (в Safari — меню «Разработка»)."
         case .browserAutomation:
-            return "macOS не разрешает Cool Notch управлять этим браузером. «Настройки» откроет «Конфиденциальность» → «Автоматизация»: включи там браузер под Cool Notch."
+            return "macOS не разрешает Halo управлять этим браузером. «Настройки» откроет «Конфиденциальность» → «Автоматизация»: включи там браузер под Halo."
         case .noTab:
             return "Не нашёл открытую вкладку с этим видео. Если вкладку закрыли или перезагрузили — карточка обновится сама."
         case .failed(let message):

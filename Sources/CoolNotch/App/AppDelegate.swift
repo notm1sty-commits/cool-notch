@@ -13,8 +13,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Приложение, в котором был пользователь до открытия наших окон: вернём ему фокус.
     private var appBeforeWindows: NSRunningApplication?
     private var windowObservers: [NSObjectProtocol] = []
+    /// Настройки на момент открытия окна — для кнопки «Отмена».
+    private var settingsSnapshot: [String: Any] = [:]
+    private static let settingsKeys = [
+        Pref.hoverDelay, Pref.haptics, Pref.showMusicActivity, Pref.showChargingActivity, Pref.showLowBattery,
+        Pref.trackBanners, Pref.deviceBanners, Pref.browserMusic, Pref.systemNowPlaying, Pref.systemNotifications,
+        Pref.notchStyle, Pref.fx3D, Pref.fxJelly, Pref.glassTint, Pref.screenshotsInHistory, Pref.autoCheckUpdates,
+        Pref.betaUpdates, Pref.clipboardHistory, Pref.openOnFileDrag, Pref.timerSound, "appColorOverrides",
+    ]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Приложение переименовано в Halo: если старая обновлялка положила нас как «Cool Notch.app»,
+        // переименовываем папку и перезапускаемся уже оттуда.
+        if AppRelocation.renameLegacyBundleIfNeeded() { return }
         Pref.registerDefaults()
         SystemState.start()
 
@@ -48,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            if let image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Cool Notch") {
+            if let image = NSImage(systemSymbolName: "sparkles", accessibilityDescription: "Halo") {
                 image.isTemplate = true
                 button.image = image
             } else {
@@ -65,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(makeItem("Очистить полку", #selector(clearShelf), ""))
         menu.addItem(makeItem("Очистить историю буфера", #selector(clearClipboard), ""))
         menu.addItem(.separator())
-        menu.addItem(makeItem("Выйти из Cool Notch", #selector(quit), "q"))
+        menu.addItem(makeItem("Выйти из Halo", #selector(quit), "q"))
         item.menu = menu
         statusItem = item
     }
@@ -99,10 +110,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 nowPlaying: viewModel?.nowPlaying,
                 clipboard: viewModel?.clipboard,
                 showcase: showcase,
-                onApply: { [weak self] in self?.settingsWindow?.close() }
+                onApply: { [weak self] in self?.settingsWindow?.close() },
+                onCancel: { [weak self] in self?.cancelSettings() }
             ))
             let window = NSWindow(contentViewController: hosting)
-            window.title = "Настройки Cool Notch"
+            window.title = "Настройки Halo"
             window.styleMask = [.titled, .closable, .fullSizeContentView]
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
@@ -112,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow = window
         }
         guard let window = settingsWindow else { return }
+        if !window.isVisible { snapshotSettings() }
         // Всегда ровно по центру экрана с чёлкой.
         if let screen = NSScreen.notchScreen ?? NSScreen.main {
             let area = screen.visibleFrame
@@ -120,6 +133,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rememberFrontApp()
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
+    }
+
+    /// Запоминаем значения (сохранённые явно, без значений по умолчанию), чтобы «Отмена» вернула их.
+    private func snapshotSettings() {
+        let persistent = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "") ?? [:]
+        settingsSnapshot = [:]
+        for key in Self.settingsKeys {
+            if let value = persistent[key] { settingsSnapshot[key] = value }
+        }
+    }
+
+    /// «Отмена»: настройки применяются сразу, поэтому возвращаем то, что было при открытии окна.
+    private func cancelSettings() {
+        let defaults = UserDefaults.standard
+        for key in Self.settingsKeys {
+            if let value = settingsSnapshot[key] {
+                defaults.set(value, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        settingsWindow?.close()
     }
 
     private func rememberFrontApp() {
@@ -137,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Закрыли настройки или окно разрешений. Если других наших окон нет, отдаём фокус обратно:
-    /// иначе Cool Notch остаётся активным без окон, и macOS перестаёт сообщать о движении мыши.
+    /// иначе Halo остаётся активным без окон, и macOS перестаёт сообщать о движении мыши.
     private func windowClosed(_ closing: NSWindow?) {
         let stillOpen = [settingsWindow, onboardingWindow].compactMap { $0 }.filter { $0 !== closing && $0.isVisible }
         guard stillOpen.isEmpty else { return }
@@ -168,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             let hosting = NSHostingController(rootView: view)
             let window = NSWindow(contentViewController: hosting)
-            window.title = "Добро пожаловать в Cool Notch"
+            window.title = "Добро пожаловать в Halo"
             window.styleMask = [.titled, .closable, .fullSizeContentView]
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
@@ -190,5 +225,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak window] in
             window?.level = .normal
         }
+    }
+}
+
+/// Переезд «Cool Notch.app» → «Halo.app» после переименования приложения.
+enum AppRelocation {
+    @MainActor
+    static func renameLegacyBundleIfNeeded() -> Bool {
+        let current = Bundle.main.bundleURL
+        guard current.lastPathComponent == "Cool Notch.app",
+              !current.path.contains("/AppTranslocation/") else { return false }
+        let parent = current.deletingLastPathComponent()
+        let target = parent.appendingPathComponent("Halo.app")
+        let files = FileManager.default
+        guard !files.fileExists(atPath: target.path), files.isWritableFile(atPath: parent.path) else { return false }
+        do {
+            try files.moveItem(at: current, to: target)
+        } catch {
+            return false
+        }
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "sleep 0.6; /usr/bin/open \"$0\"", target.path]
+        try? relaunch.run()
+        NSApp.terminate(nil)
+        return true
     }
 }

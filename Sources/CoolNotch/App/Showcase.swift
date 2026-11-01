@@ -83,7 +83,7 @@ final class Showcase {
             icon: .app("com.apple.MobileSMS"),
             tint: .white,
             title: "Аня",
-            subtitle: "Это тест анимаций Cool Notch ✨",
+            subtitle: "Это тест анимаций Halo ✨",
             duration: 3.4,
             action: .openNotch,
             source: "Сообщения"

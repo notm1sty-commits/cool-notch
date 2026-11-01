@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# Запускает помощник Cool Notch (libCoolNotchMediaBridge.dylib) внутри системного perl,
+# Запускает помощник Halo (libCoolNotchMediaBridge.dylib) внутри системного perl,
 # чтобы читать «Что играет» на macOS 15.4+. Подробности — в Helpers/MediaBridge/MediaBridge.m.
 use strict;
 use warnings;

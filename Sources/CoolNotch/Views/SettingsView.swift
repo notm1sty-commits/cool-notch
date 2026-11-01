@@ -10,6 +10,8 @@ struct SettingsView: View {
     var showcase: Showcase?
     /// Закрыть окно настроек (кнопка «Применить»).
     var onApply: () -> Void = {}
+    /// Вернуть всё, что поменяли с момента открытия окна, и закрыть (кнопка «Отмена»).
+    var onCancel: () -> Void = {}
 
     @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
@@ -212,10 +214,13 @@ struct SettingsView: View {
     /// Изменения применяются сразу; «Применить» закрывает окно и возвращает фокус туда, где ты был.
     private var footer: some View {
         HStack {
-            Text("Cool Notch \(Self.version)")
+            Text("Halo \(Self.version)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
+            Button("Отмена") { onCancel() }
+                .keyboardShortcut(.cancelAction)
+                .controlSize(.large)
             Button("Применить") { onApply() }
                 .keyboardShortcut(.defaultAction)
                 .controlSize(.large)
@@ -262,7 +267,7 @@ private struct NotificationAccessRow: View {
                         .foregroundStyle(.secondary)
                 }
                 .font(.caption)
-                Text("Если приложения нет в чёлке, проверь в «Системных настройках» → «Уведомления» → приложение, что включено «Показывать в Центре уведомлений»: Cool Notch видит только то, что туда попадает.")
+                Text("Если приложения нет в чёлке, проверь в «Системных настройках» → «Уведомления» → приложение, что включено «Показывать в Центре уведомлений»: Halo видит только то, что туда попадает.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -271,7 +276,7 @@ private struct NotificationAccessRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             case .needsAccess, .off:
-                Text("macOS не даёт приложениям читать чужие уведомления напрямую. Cool Notch читает журнал Центра уведомлений на твоём Маке (только чтение, никуда не отправляется). Для этого нужен «Полный доступ к диску»: добавь туда Cool Notch и включи переключатель.")
+                Text("macOS не даёт приложениям читать чужие уведомления напрямую. Halo читает журнал Центра уведомлений на твоём Маке (только чтение, никуда не отправляется). Для этого нужен «Полный доступ к диску»: добавь туда Halo и включи переключатель.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -362,7 +367,7 @@ private struct UpdatesSection: View {
         case .installing: return "Устанавливаю и перезапускаю…"
         case .upToDate: return updates.latest == nil ? "Обновлений пока нет" : "Последняя версия"
         case .failed: return "Не получилось обновить"
-        case .idle: return updates.hasUpdate ? "Доступна версия \(updates.latest?.version ?? "")" : "Cool Notch \(updates.currentVersion)"
+        case .idle: return updates.hasUpdate ? "Доступна версия \(updates.latest?.version ?? "")" : "Halo \(updates.currentVersion)"
         }
     }
 

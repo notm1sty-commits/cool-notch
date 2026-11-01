@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Записывает видео демо-режима Cool Notch (для CI). Результат — в папке preview/.
+# Записывает видео демо-режима Halo (для CI). Результат — в папке preview/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT="preview"
 mkdir -p "$OUT"
-APP=".build/app/Cool Notch.app/Contents/MacOS/CoolNotch"
+APP=".build/app/Halo.app/Contents/MacOS/CoolNotch"
 DURATION=62
 
 # Информация об экране — пригодится, чтобы поднять разрешение записи.
