@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var settingsWindow: NSWindow?
     private var demoDirector: DemoDirector?
+    private var showcase: Showcase?
     private var onboardingWindow: NSWindow?
     /// Приложение, в котором был пользователь до открытия наших окон: вернём ему фокус.
     private var appBeforeWindows: NSRunningApplication?
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let viewModel = NotchViewModel()
         viewModel.openSettings = { [weak self] in self?.showSettings() }
         self.viewModel = viewModel
+        showcase = Showcase(viewModel: viewModel)
 
         let isDemo = CommandLine.arguments.contains("--demo")
         let controller = NotchWindowController(viewModel: viewModel, demo: isDemo)
@@ -82,31 +84,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func showOnboardingAction() { showOnboarding() }
     @objc private func checkUpdates() {
         viewModel?.updates.check()
-        showSettings()
+        showSettings(page: .updates)
     }
 
     // MARK: - Settings
 
-    func showSettings() {
+    func showSettings(page: SettingsPage? = nil) {
         viewModel?.close()
+        if let page { UserDefaults.standard.set(page.rawValue, forKey: "settingsPage") }
         if settingsWindow == nil {
             let hosting = NSHostingController(rootView: SettingsView(
                 notifications: viewModel?.notifications,
                 updates: viewModel?.updates,
                 nowPlaying: viewModel?.nowPlaying,
-                clipboard: viewModel?.clipboard
+                clipboard: viewModel?.clipboard,
+                showcase: showcase,
+                onApply: { [weak self] in self?.settingsWindow?.close() }
             ))
             let window = NSWindow(contentViewController: hosting)
-            window.title = "Cool Notch — настройки"
-            window.styleMask = [.titled, .closable, .miniaturizable]
+            window.title = "Настройки Cool Notch"
+            window.styleMask = [.titled, .closable, .fullSizeContentView]
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
-            window.center()
             watchClose(of: window)
             settingsWindow = window
         }
+        guard let window = settingsWindow else { return }
+        // Всегда ровно по центру экрана с чёлкой.
+        if let screen = NSScreen.notchScreen ?? NSScreen.main {
+            let area = screen.visibleFrame
+            window.setFrameOrigin(NSPoint(x: area.midX - window.frame.width / 2, y: area.midY - window.frame.height / 2))
+        }
         rememberFrontApp()
         NSApp.activate()
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        window.makeKeyAndOrderFront(nil)
     }
 
     private func rememberFrontApp() {

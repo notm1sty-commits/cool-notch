@@ -59,6 +59,7 @@ private struct HeaderBar: View {
                 if vm.updates.hasUpdate {
                     Button {
                         vm.updates.install()
+                        UserDefaults.standard.set(SettingsPage.updates.rawValue, forKey: "settingsPage")
                         vm.openSettings?()
                     } label: {
                         Image(systemName: "arrow.down.circle.fill")

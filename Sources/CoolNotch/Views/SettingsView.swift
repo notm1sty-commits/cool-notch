@@ -7,6 +7,9 @@ struct SettingsView: View {
     var updates: UpdateService?
     var nowPlaying: NowPlayingService?
     var clipboard: ClipboardService?
+    var showcase: Showcase?
+    /// Закрыть окно настроек (кнопка «Применить»).
+    var onApply: () -> Void = {}
 
     @AppStorage(Pref.hoverDelay) var hoverDelay = 0.1
     @AppStorage(Pref.haptics) var haptics = true
@@ -34,137 +37,197 @@ struct SettingsView: View {
     @State var loginError: String?
     @State var controlAccess = AXIsProcessTrusted()
 
+    /// Открытый раздел. Хранится в настройках, чтобы, например, баннер обновления открывал сразу «Обновления».
+    @AppStorage("settingsPage") private var pageRaw = SettingsPage.general.rawValue
+
+    private var page: SettingsPage {
+        get { SettingsPage(rawValue: pageRaw) ?? .general }
+        nonmutating set { pageRaw = newValue.rawValue }
+    }
+
     var body: some View {
-        Form {
-            Section("Оформление") {
-                Picker("Подложка чёлки", selection: $notchStyle) {
-                    Text("Чёрная").tag("black")
-                    Text("Стекло").tag("glass")
-                }
-                .pickerStyle(.segmented)
-                if notchStyle == "glass" {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Затемнение стекла: \(Int(glassTint * 100))%")
-                        Slider(value: $glassTint, in: 0.15...0.85)
+        VStack(spacing: 0) {
+            pageBar
+                .padding(.top, 30)
+                .padding(.bottom, 6)
+
+            Form {
+                switch page {
+                case .general:
+                    Section("Поведение") {
+                        Toggle("Запускать при входе в систему", isOn: $launchAtLogin)
+                            .onChange(of: launchAtLogin) { _, enabled in
+                                setLaunchAtLogin(enabled)
+                            }
+                        if let loginError {
+                            Text(loginError)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Задержка открытия при наведении: \(hoverDelay, specifier: "%.2f") с")
+                            Slider(value: $hoverDelay, in: 0...0.6, step: 0.02)
+                        }
+                        Toggle("Тактильный отклик трекпада", isOn: $haptics)
+                        Toggle("Открывать полку, когда тащишь файл к чёлке", isOn: $openOnFileDrag)
                     }
-                }
-                Toggle("Эффект желе при раскрытии", isOn: $fxJelly)
-                Toggle("Мягкое свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
-                Toggle("Объёмная карусель плеера", isOn: $fx3D)
-                Text("В режиме энергосбережения и при включённом «Уменьшить движение» эффекты упрощаются автоматически.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Section("Поведение") {
-                Toggle("Запускать при входе в систему", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in
-                        setLaunchAtLogin(enabled)
+                    Section("Живые активности по бокам от выреза") {
+                        Toggle("Музыка: обложка и эквалайзер", isOn: $showMusic)
+                        Toggle("Анимация при подключении зарядки", isOn: $showCharging)
                     }
-                if let loginError {
-                    Text(loginError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Задержка открытия при наведении: \(hoverDelay, specifier: "%.2f") с")
-                    Slider(value: $hoverDelay, in: 0...0.6, step: 0.02)
-                }
-                Toggle("Тактильный отклик трекпада", isOn: $haptics)
-                Toggle("Открывать полку, когда тащишь файл к чёлке", isOn: $openOnFileDrag)
-            }
-
-            Section("Уведомления в чёлке") {
-                Toggle("Уведомления всех приложений", isOn: $systemNotifications)
-                if systemNotifications, let notifications {
-                    NotificationAccessRow(mirror: notifications)
-                }
-                Toggle("Смена трека и видео", isOn: $trackBanners)
-                Toggle("Подключение наушников и колонок", isOn: $deviceBanners)
-                Toggle("Низкий заряд батареи", isOn: $showLowBattery)
-                Toggle("Звук по окончании таймера", isOn: $timerSound)
-            }
-
-            Section("Живые активности по бокам от выреза") {
-                Toggle("Музыка: обложка и эквалайзер", isOn: $showMusic)
-                Toggle("Анимация при подключении зарядки", isOn: $showCharging)
-            }
-
-            Section("Музыка") {
-                Toggle("Любой плеер через системный «Что играет»", isOn: $systemNowPlaying)
-                if systemNowPlaying, let nowPlaying {
-                    LabeledContent("Сейчас видит") {
-                        Text(nowPlaying.systemStatus)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.caption)
-                }
-                Text("Показывает трек из любого приложения — Яндекс Музыки, браузера, Spotify. Работает через небольшой помощник, который запускается в системном perl: так macOS отдаёт эти данные. Если что-то не так — выключи, и чёлка вернётся к Spotify, Музыке и браузеру.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Toggle("Музыка из браузера (Яндекс Музыка, YouTube, SoundCloud, VK)", isOn: $browserMusic)
-                if browserMusic {
-                    Text("Один раз включи в браузере разрешение:\n• Chrome / Яндекс Браузер / Edge: меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events».\n• Safari: «Настройки» → «Дополнения» → «Показывать функции для веб-разработчиков», затем меню «Разработка» → «Разрешить JavaScript из Apple Events».")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Управление любым плеером")
-                        Text("Кнопки ⏯ ⏭ ⏮ для приложения Яндекс Музыки и других плееров. Нужен «Универсальный доступ».")
+                case .look:
+                    Section("Оформление") {
+                        Picker("Подложка чёлки", selection: $notchStyle) {
+                            Text("Чёрная").tag("black")
+                            Text("Стекло").tag("glass")
+                        }
+                        .pickerStyle(.segmented)
+                        if notchStyle == "glass" {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Затемнение стекла: \(Int(glassTint * 100))%")
+                                Slider(value: $glassTint, in: 0.15...0.85)
+                            }
+                        }
+                        Toggle("Эффект желе при раскрытии", isOn: $fxJelly)
+                        Toggle("Мягкое свечение контура при уведомлениях и зарядке", isOn: $fxEdgeGlow)
+                        Toggle("Объёмная карусель плеера", isOn: $fx3D)
+                        Text("В режиме энергосбережения и при включённом «Уменьшить движение» эффекты упрощаются автоматически.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer()
-                    if controlAccess {
-                        Label("Разрешено", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                    } else {
-                        Button("Разрешить") {
-                            MediaKeys.requestAccess()
+                case .player:
+                    Section("Музыка") {
+                        Toggle("Любой плеер через системный «Что играет»", isOn: $systemNowPlaying)
+                        if systemNowPlaying, let nowPlaying {
+                            LabeledContent("Сейчас видит") {
+                                Text(nowPlaying.systemStatus)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .font(.caption)
                         }
+                        Text("Показывает трек из любого приложения — Яндекс Музыки, браузера, Spotify. Работает через небольшой помощник, который запускается в системном perl: так macOS отдаёт эти данные. Если что-то не так — выключи, и чёлка вернётся к Spotify, Музыке и браузеру.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Toggle("Музыка из браузера (Яндекс Музыка, YouTube, SoundCloud, VK)", isOn: $browserMusic)
+                        if browserMusic {
+                            Text("Один раз включи в браузере разрешение:\n• Chrome / Яндекс Браузер / Edge: меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events».\n• Safari: «Настройки» → «Дополнения» → «Показывать функции для веб-разработчиков», затем меню «Разработка» → «Разрешить JavaScript из Apple Events».")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Управление любым плеером")
+                                Text("Кнопки ⏯ ⏭ ⏮ для приложения Яндекс Музыки и других плееров. Нужен «Универсальный доступ».")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            if controlAccess {
+                                Label("Разрешено", systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.green)
+                            } else {
+                                Button("Разрешить") {
+                                    MediaKeys.requestAccess()
+                                }
+                            }
+                        }
+                    }
+                case .notifications:
+                    Section("Уведомления в чёлке") {
+                        Toggle("Уведомления всех приложений", isOn: $systemNotifications)
+                        if systemNotifications, let notifications {
+                            NotificationAccessRow(mirror: notifications)
+                        }
+                        Toggle("Смена трека и видео", isOn: $trackBanners)
+                        Toggle("Подключение наушников и колонок", isOn: $deviceBanners)
+                        Toggle("Низкий заряд батареи", isOn: $showLowBattery)
+                        Toggle("Звук по окончании таймера", isOn: $timerSound)
+                    }
+                case .clipboard:
+                    Section("Буфер обмена") {
+                        Toggle("Сохранять историю копирования", isOn: $clipboardHistory)
+                        Toggle("Добавлять новые скриншоты", isOn: $screenshotsInHistory)
+                            .disabled(!clipboardHistory)
+                        if clipboardHistory, screenshotsInHistory, let clipboard {
+                            ScreenshotStatusRow(clipboard: clipboard)
+                        }
+                        Text("История хранится только в памяти и стирается при выходе. Пароли из менеджеров паролей пропускаются. Скриншоты берутся из папки, куда их сохраняет macOS (обычно рабочий стол).")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                case .updates:
+                    if let updates {
+                        UpdatesSection(updates: updates, autoCheck: $autoCheckUpdates, beta: $betaUpdates)
+                    }
+                case .test:
+                    if let showcase {
+                        ShowcaseSection(showcase: showcase)
                     }
                 }
             }
+            .formStyle(.grouped)
+            .scrollContentBackground(.hidden)
 
-            Section("Буфер обмена") {
-                Toggle("Сохранять историю копирования", isOn: $clipboardHistory)
-                Toggle("Добавлять новые скриншоты", isOn: $screenshotsInHistory)
-                    .disabled(!clipboardHistory)
-                if clipboardHistory, screenshotsInHistory, let clipboard {
-                    ScreenshotStatusRow(clipboard: clipboard)
-                }
-                Text("История хранится только в памяти и стирается при выходе. Пароли из менеджеров паролей пропускаются. Скриншоты берутся из папки, куда их сохраняет macOS (обычно рабочий стол).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let updates {
-                UpdatesSection(updates: updates, autoCheck: $autoCheckUpdates, beta: $betaUpdates)
-            }
-
-            Section {
-                HStack {
-                    Text("Cool Notch")
-                        .fontWeight(.semibold)
-                    Spacer()
-                    Text("версия \(Self.version)")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            footer
         }
-        .formStyle(.grouped)
-        .frame(width: 520, height: 720)
+        .frame(width: 600, height: 620)
+        .background(Color(white: 0.085).ignoresSafeArea())
+        .preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             controlAccess = AXIsProcessTrusted()
         }
+    }
+
+    /// Разделы как в системных настройках: значок и подпись, выбранный — на светлой плашке.
+    private var pageBar: some View {
+        HStack(spacing: 2) {
+            ForEach(SettingsPage.allCases) { item in
+                Button {
+                    withAnimation(.snappy(duration: 0.2)) { page = item }
+                } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: item.icon)
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(height: 18)
+                        Text(item.title)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(page == item ? Color.white : Color.white.opacity(0.55))
+                    .frame(width: 78, height: 50)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(page == item ? 0.12 : 0))
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// Изменения применяются сразу; «Применить» закрывает окно и возвращает фокус туда, где ты был.
+    private var footer: some View {
+        HStack {
+            Text("Cool Notch \(Self.version)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("Применить") { onApply() }
+                .keyboardShortcut(.defaultAction)
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(Color.white.opacity(0.04))
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) {
@@ -332,5 +395,65 @@ private struct ScreenshotStatusRow: View {
             }
         }
         .font(.caption)
+    }
+}
+
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case general, look, player, notifications, clipboard, updates, test
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "Основные"
+        case .look: return "Вид"
+        case .player: return "Плеер"
+        case .notifications: return "Уведомления"
+        case .clipboard: return "Буфер"
+        case .updates: return "Обновления"
+        case .test: return "Тест"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .look: return "paintbrush"
+        case .player: return "music.note"
+        case .notifications: return "bell.badge"
+        case .clipboard: return "doc.on.clipboard"
+        case .updates: return "arrow.down.circle"
+        case .test: return "play.rectangle"
+        }
+    }
+}
+
+/// «Тест»: по кругу показывает все анимации чёлки, пока не нажмёшь «Стоп».
+private struct ShowcaseSection: View {
+    let showcase: Showcase
+
+    var body: some View {
+        Section("Тест анимаций") {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(showcase.isRunning ? "Показываю: \(showcase.step)" : "Показать все анимации по очереди")
+                        .fontWeight(.medium)
+                    Text("Смена трека, уведомление, раскрытие, карусель, вкладки, AirPods, зарядка. Идёт по кругу, пока не нажмёшь «Стоп». Твои заметки, полка и история не меняются.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                if showcase.isRunning {
+                    Button("Стоп") { showcase.stop() }
+                        .controlSize(.large)
+                        .tint(.red)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Запустить") { showcase.start() }
+                        .controlSize(.large)
+                }
+            }
+        }
     }
 }

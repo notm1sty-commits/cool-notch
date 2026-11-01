@@ -50,19 +50,18 @@ private struct DropHint: View {
         ZStack {
             RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous)
                 .strokeBorder(
-                    Color.white.opacity(active ? 0.5 : 0.16),
-                    style: StrokeStyle(lineWidth: 1.2, dash: [5, 5])
+                    Color.white.opacity(active ? 0.5 : 0.14),
+                    style: StrokeStyle(lineWidth: 1, dash: [5, 5])
                 )
-            VStack(spacing: 6) {
+            PlaceholderView(
+                title: active ? "Отпускай" : "Перетащи файлы на чёлку",
+                subtitle: "Они подождут здесь, пока не понадобятся",
+                fill: .white.opacity(active ? 0.16 : 0.08)
+            ) {
                 Image(systemName: active ? "tray.and.arrow.down.fill" : "tray")
-                    .font(.system(size: 22, weight: .medium))
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white.opacity(active ? 1 : 0.62))
                     .contentTransition(.symbolEffect(.replace))
-                    .foregroundStyle(active ? Color.white : Theme.tertiaryText)
-                Text(active ? "Отпускай" : "Перетащи файлы на чёлку")
-                    .font(.system(size: 13, weight: .semibold))
-                Text("Они подождут здесь, пока не понадобятся")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.tertiaryText)
             }
         }
         .scaleEffect(active ? 1.02 : 1)
@@ -77,35 +76,14 @@ private struct AirDropZone: View {
 
     var body: some View {
         let hasItems = !vm.shelf.items.isEmpty
-        VStack(spacing: 7) {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(red: 0.24, green: 0.62, blue: 1), Color(red: 0.08, green: 0.38, blue: 0.96)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(width: 42, height: 42)
-                Image(systemName: "antenna.radiowaves.left.and.right")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .symbolEffect(.variableColor.iterative, isActive: targeted)
-            }
-            .scaleEffect(targeted ? 1.12 : (hovering && hasItems ? 1.05 : 1))
-            .shadow(color: Color.blue.opacity(targeted ? 0.6 : 0), radius: 12)
-
-            VStack(spacing: 1) {
-                Text("AirDrop")
-                    .font(.system(size: 12, weight: .semibold))
-                Text(targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми, чтобы отправить всё" : "Брось файл сюда"))
-                    .font(.system(size: 9.5))
-                    .foregroundStyle(Theme.tertiaryText)
-                    .multilineTextAlignment(.center)
-            }
+        PlaceholderView(
+            title: "AirDrop",
+            subtitle: targeted ? "Отпусти — отправлю" : (hasItems ? "Нажми, чтобы отправить всё" : "Брось файл сюда"),
+            fill: Color(red: 0.12, green: 0.5, blue: 1)
+        ) {
+            AirDropGlyph()
         }
-        .padding(.horizontal, 6)
+        .scaleEffect(targeted ? 1.06 : (hovering && hasItems ? 1.03 : 1))
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .glass(Theme.cardRadius, highlighted: targeted || (hovering && hasItems), tint: targeted ? Color(red: 0.35, green: 0.68, blue: 1) : .white)
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))

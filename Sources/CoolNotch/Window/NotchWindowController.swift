@@ -14,7 +14,10 @@ final class NotchWindowController {
     private var observers: [NSObjectProtocol] = []
     private var pollTimer: Timer?
 
-    private var mouseIsDown = false
+    /// Зажата ли левая кнопка прямо сейчас. Спрашиваем систему, а не запоминаем по событиям:
+    /// кнопки окон, переключатели и ползунки «съедают» отпускание кнопки, и чёлка думала,
+    /// что кнопка всё ещё зажата, — и не раскрывалась, пока не кликнешь.
+    private var mouseIsDown: Bool { NSEvent.pressedMouseButtons & 1 != 0 }
     private var dragStartChangeCount = 0
     private var isFileDragging = false
     /// Накопленный горизонтальный сдвиг двумя/тремя пальцами — для переключения карточек.
@@ -146,7 +149,6 @@ final class NotchWindowController {
     private func handle(_ type: NSEvent.EventType, local: Bool) {
         switch type {
         case .leftMouseDown, .rightMouseDown:
-            mouseIsDown = type == .leftMouseDown
             dragStartChangeCount = NSPasteboard(name: .drag).changeCount
             isFileDragging = false
             // Клик мимо открытой чёлки — закрываем.
@@ -154,7 +156,6 @@ final class NotchWindowController {
                 viewModel.close()
             }
         case .leftMouseUp:
-            mouseIsDown = false
             isFileDragging = false
         case .leftMouseDragged:
             let pasteboard = NSPasteboard(name: .drag)

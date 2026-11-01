@@ -140,11 +140,13 @@ final class NotchChrome {
         let k = scale
         var g = frame.geometry
 
-        // «Желе»: форма чуть-чуть сплющивается и вытягивается от скорости и пружинит обратно.
+        // «Желе»: форма чуть-чуть сплющивается и вытягивается от скорости и пружинит обратно,
+        // а содержимое тянется вместе с ней (от верхнего края по центру).
+        var sx: CGFloat = 1, sy: CGFloat = 1
         if state.jelly {
             let vw = frame.widthVelocity, vh = frame.heightVelocity
-            let sx = 1 + clamp(vw / 16000, 0.02) - clamp(vh / 20000, 0.012)
-            let sy = 1 + clamp(vh / 11000, 0.035) - clamp(vw / 22000, 0.012)
+            sx = 1 + clamp(vw / 16000, 0.02) - clamp(vh / 20000, 0.012)
+            sy = 1 + clamp(vh / 11000, 0.035) - clamp(vw / 22000, 0.012)
             g.width *= sx
             g.height *= sy
         }
@@ -163,6 +165,15 @@ final class NotchChrome {
         tintLayer.path = closed
         glassMask.path = closed
         contentMask.path = closed
+        if sx == 1 && sy == 1 {
+            contentContainer.layer?.sublayerTransform = CATransform3DIdentity
+        } else {
+            let pivotX = bounds.midX
+            var transform = CATransform3DMakeTranslation(pivotX, 0, 0)
+            transform = CATransform3DScale(transform, sx, sy, 1)
+            transform = CATransform3DTranslate(transform, -pivotX, 0, 0)
+            contentContainer.layer?.sublayerTransform = transform
+        }
         hairline.path = open
         hairline.lineWidth = k
 

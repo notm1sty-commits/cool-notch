@@ -595,6 +595,7 @@ final class NotchViewModel {
             nowPlaying.openSourceApp()
         case .installUpdate:
             updates.install()
+            UserDefaults.standard.set(SettingsPage.updates.rawValue, forKey: "settingsPage")
             openSettings?()
         case .openApp(let bundleID):
             if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {

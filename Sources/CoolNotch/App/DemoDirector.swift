@@ -18,7 +18,7 @@ final class DemoDirector {
         Task { await play() }
     }
 
-    private static func image(_ name: String) -> NSImage? {
+    static func image(_ name: String) -> NSImage? {
         guard let url = Bundle.main.url(forResource: name, withExtension: "jpg", subdirectory: "Demo") else { return nil }
         return NSImage(contentsOf: url)
     }

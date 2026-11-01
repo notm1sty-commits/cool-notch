@@ -553,6 +553,19 @@ final class NowPlayingService {
         recompute()
     }
 
+    /// Выход из демо: забываем показные карточки и снова слушаем настоящие плееры.
+    func endDemo() {
+        guard isDemo else { return }
+        isDemo = false
+        candidates = [:]
+        pending = [:]
+        controlIssues = [:]
+        displayedKey = nil
+        recompute()
+        if Pref.bool(Pref.systemNowPlaying) { bridge.start() }
+        refreshAll()
+    }
+
     func setDemoPlaying(_ source: PlayerSource, _ playing: Bool) {
         guard let item = items.first(where: { $0.id == source }), item.isPlaying != playing else { return }
         toggle(item)

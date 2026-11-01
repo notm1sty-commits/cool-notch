@@ -265,27 +265,73 @@ struct CapsuleButton: View {
     }
 }
 
-struct PlaceholderView: View {
-    var icon: String
+/// Пустое состояние: иконка в круглой подложке, заголовок и подпись. Одна раскладка на всё
+/// приложение — заметки, буфер, полка и AirDrop выглядят одинаково.
+struct PlaceholderView<Glyph: View>: View {
     var title: String
     var subtitle: String?
+    var fill: Color = .white.opacity(0.08)
+    @ViewBuilder var glyph: () -> Glyph
 
     var body: some View {
-        VStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(Theme.tertiaryText)
-                .padding(.bottom, 2)
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-            if let subtitle {
-                Text(subtitle)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.tertiaryText)
-                    .multilineTextAlignment(.center)
+        VStack(spacing: 10) {
+            ZStack {
+                Circle().fill(fill)
+                glyph()
             }
+            .frame(width: 40, height: 40)
+            VStack(spacing: 3) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.88))
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(Theme.tertiaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .multilineTextAlignment(.center)
         }
+        .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+}
+
+extension PlaceholderView where Glyph == PlaceholderSymbol {
+    init(icon: String, title: String, subtitle: String? = nil) {
+        self.init(title: title, subtitle: subtitle) { PlaceholderSymbol(name: icon) }
+    }
+}
+
+struct PlaceholderSymbol: View {
+    var name: String
+    var color: Color = .white.opacity(0.62)
+
+    var body: some View {
+        Image(systemName: name)
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(color)
+    }
+}
+
+/// Значок AirDrop: концентрические дуги, открытые снизу, и точка в центре.
+struct AirDropGlyph: View {
+    var color: Color = .white
+
+    var body: some View {
+        Canvas { context, size in
+            let center = CGPoint(x: size.width / 2, y: size.height / 2)
+            let unit = min(size.width, size.height) / 2
+            for radius in [0.42, 0.7, 0.98] {
+                var arc = Path()
+                arc.addRelativeArc(center: center, radius: unit * radius, startAngle: .degrees(125), delta: .degrees(290))
+                context.stroke(arc, with: .color(color), style: StrokeStyle(lineWidth: unit * 0.13, lineCap: .round))
+            }
+            let dot = unit * 0.15
+            context.fill(Path(ellipseIn: CGRect(x: center.x - dot, y: center.y - dot, width: dot * 2, height: dot * 2)), with: .color(color))
+        }
+        .frame(width: 20, height: 20)
+    }
+}
 }

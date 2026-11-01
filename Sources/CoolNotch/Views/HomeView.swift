@@ -629,7 +629,7 @@ private struct TimerCard: View {
 
     var body: some View {
         let timer = vm.timer
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Таймер").sectionLabelStyle()
                 Spacer()
@@ -646,7 +646,6 @@ private struct TimerCard: View {
                     .foregroundStyle(Theme.orange)
                     .contentTransition(.numericText(countsDown: true))
                     .animation(Theme.micro, value: timer.remainingText)
-                Spacer(minLength: 0)
                 Capsule()
                     .fill(Theme.orange.opacity(0.2))
                     .frame(height: 4)
@@ -658,7 +657,6 @@ private struct TimerCard: View {
                                 .animation(.linear(duration: 0.5), value: timer.progress)
                         }
                     }
-                Spacer(minLength: 0)
                 HStack(spacing: 8) {
                     pill(systemName: "xmark", tint: .white, help: "Отменить") {
                         withAnimation(Theme.content) { timer.stop() }
@@ -688,16 +686,16 @@ private struct TimerCard: View {
                         .buttonStyle(PressableButtonStyle(scale: 0.88))
                     }
                 }
-                Spacer(minLength: 0)
+                // Сразу под пресетами, а не прижата к низу — без пустого провала посередине.
                 Button {
                     commitDraft()
                     withAnimation(Theme.content) { timer.start(seconds: TimeInterval(preset)) }
                 } label: {
                     Text("Старт")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.orange)
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(Capsule().fill(Theme.orange.opacity(0.24)))
+                        .frame(maxWidth: .infinity, minHeight: 24)
+                        .background(Capsule().fill(Theme.orange.opacity(0.22)))
                 }
                 .buttonStyle(PressableButtonStyle(scale: 0.94))
             }
