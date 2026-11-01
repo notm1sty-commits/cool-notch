@@ -132,10 +132,17 @@ final class EqualizerNSView: NSView {
     func update(color: NSColor, isPlaying: Bool, lowPower: Bool) {
         if color != self.color {
             self.color = color
-            CATransaction.begin()
-            CATransaction.setAnimationDuration(0.6)
-            for bar in bars { bar.backgroundColor = color.cgColor }  // плавная смена цвета
-            CATransaction.commit()
+            // Плавное перетекание в цвет новой обложки.
+            for bar in bars {
+                let from = bar.presentation()?.backgroundColor ?? bar.backgroundColor
+                let fade = CABasicAnimation(keyPath: "backgroundColor")
+                fade.fromValue = from
+                fade.toValue = color.cgColor
+                fade.duration = 0.8
+                fade.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                bar.backgroundColor = color.cgColor
+                bar.add(fade, forKey: "color")
+            }
         }
         let changed = isPlaying != self.isPlaying || lowPower != self.lowPower
         self.isPlaying = isPlaying

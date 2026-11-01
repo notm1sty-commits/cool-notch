@@ -326,6 +326,8 @@ private struct MediaCard: View {
                         .contentTransition(.opacity)
                 }
                 .fixedSize()
+                // Цвет «Играет» плавно перетекает вместе с эквалайзером при смене трека.
+                .animation(.easeInOut(duration: 0.8), value: item.accent)
             }
             .font(.system(size: 11, weight: .semibold))
             .frame(height: 16)

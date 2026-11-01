@@ -241,6 +241,8 @@ final class NowPlayingService {
     /// и раскрытой чёлки. Кэш держит саму картинку, поэтому её адрес не может достаться
     /// новой обложке (раньше из-за этого цвет эквалайзера иногда был от другого трека).
     @ObservationIgnored private var looks: [ObjectIdentifier: ArtworkLook] = [:]
+    /// Последний цвет обложки каждого источника — пока новая обложка догружается.
+    @ObservationIgnored private var lastAccent: [PlayerSource: NSColor] = [:]
 
     init() {
         runner = AppleScriptRunner()
@@ -876,7 +878,10 @@ final class NowPlayingService {
 
         let look = candidate.artwork.map(look(for:))
         let backdrop = look?.backdrop
-        let accent = look?.accent ?? .white
+        // Новый трек часто приходит без обложки, и она догружается чуть позже. Чтобы цвет не прыгал
+        // в белый и обратно, держим прежний цвет этого источника, пока не придёт новая обложка.
+        let accent = look?.accent ?? lastAccent[candidate.source] ?? .white
+        if let look { lastAccent[candidate.source] = look.accent }
 
         let subtitle = [candidate.track.artist, candidate.track.album].filter { !$0.isEmpty }.joined(separator: " — ")
         return MediaItem(
@@ -912,7 +917,9 @@ final class NowPlayingService {
 
     private func applyArtwork(_ image: NSImage?) {
         artwork = image
-        let color = image.map { look(for: $0).accent } ?? .white
+        // Без обложки (догружается) оставляем прежний цвет — эквалайзер не мигает белым.
+        guard let image else { return }
+        let color = look(for: image).accent
         if color != accentNSColor {
             accentNSColor = color
             accent = Color(nsColor: color)
