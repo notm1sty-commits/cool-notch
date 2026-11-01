@@ -89,14 +89,18 @@ struct ClipboardView: View {
                 PlaceholderView(
                     icon: "doc.on.clipboard",
                     title: "История буфера выключена",
-                    subtitle: "Включить можно в настройках"
+                    subtitle: "Включить можно в настройках",
+                    layout: .horizontal
                 )
             } else if clipboard.entries.isEmpty {
                 PlaceholderView(
                     icon: "doc.on.clipboard",
                     title: "Скопируй текст или сделай скриншот",
-                    subtitle: "Последние копирования и снимки экрана появятся здесь. Пароли не сохраняются."
+                    subtitle: "Они появятся здесь. Пароли не сохраняются.",
+                    layout: .horizontal
                 )
+                // Строка с кнопками сверху «тянет» вниз — поднимаем, чтобы стояло по центру панели.
+                .padding(.bottom, 30)
             } else {
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVGrid(columns: columns, spacing: 6) {
