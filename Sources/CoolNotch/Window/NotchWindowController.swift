@@ -17,6 +17,9 @@ final class NotchWindowController {
     private var mouseIsDown = false
     private var dragStartChangeCount = 0
     private var isFileDragging = false
+    /// Накопленный горизонтальный сдвиг двумя/тремя пальцами — для переключения карточек.
+    private var swipeAccumulator: CGFloat = 0
+    private var swipeFired = false
 
     private let isDemo: Bool
 
@@ -132,6 +135,12 @@ final class NotchWindowController {
         }) {
             monitors.append(local)
         }
+        // Свайп по чёлке влево/вправо листает то, что играет (музыка, видео…).
+        if let swipes = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .swipe], handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.handleSwipe(event) ?? event }
+        }) {
+            monitors.append(swipes)
+        }
     }
 
     private func handle(_ type: NSEvent.EventType, local: Bool) {
@@ -158,6 +167,39 @@ final class NotchWindowController {
             break
         }
         updateHover()
+    }
+
+    /// Трёхпальцевый свайп (если он не занят переключением рабочих столов) или горизонтальная
+    /// прокрутка двумя пальцами над открытой чёлкой на вкладке «Главная».
+    private func handleSwipe(_ event: NSEvent) -> NSEvent? {
+        guard viewModel.isOpen, viewModel.tab == .home,
+              viewModel.hoverZone.contains(NSEvent.mouseLocation) else { return event }
+        if event.type == .swipe {
+            guard event.deltaX != 0 else { return event }
+            viewModel.swipeDeck(next: event.deltaX > 0)
+            return nil
+        }
+        guard event.hasPreciseScrollingDeltas else { return event }  // только трекпад
+        let horizontal = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY)
+        switch event.phase {
+        case .began:
+            swipeAccumulator = 0
+            swipeFired = false
+        case .changed:
+            guard !swipeFired, horizontal else { break }
+            swipeAccumulator += event.scrollingDeltaX
+            if abs(swipeAccumulator) > 45 {
+                swipeFired = true
+                // Пальцы влево — следующая карточка, как перелистывание на iPhone.
+                let fingersLeft = event.isDirectionInvertedFromDevice ? swipeAccumulator < 0 : swipeAccumulator > 0
+                viewModel.swipeDeck(next: fingersLeft)
+            }
+        case .ended, .cancelled:
+            swipeAccumulator = 0
+        default:
+            break
+        }
+        return horizontal ? nil : event
     }
 
     private func updateHover() {

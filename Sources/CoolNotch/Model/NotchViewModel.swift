@@ -145,7 +145,6 @@ final class NotchViewModel {
     @ObservationIgnored private var defaultsObserver: NSObjectProtocol?
     @ObservationIgnored private var lastPresentationKind = 0
     @ObservationIgnored private var lastHovering = false
-    @ObservationIgnored private var browserHintShown: Set<BrowserKind> = []
 
     init() {
         motion = NotchMotion()
@@ -191,21 +190,6 @@ final class NotchViewModel {
                 title: "Таймер завершён",
                 subtitle: minutes > 0 ? "Прошло \(minutes) мин" : nil,
                 duration: 6
-            ))
-        }
-        nowPlaying.onBrowserControlUnavailable = { [weak self] kind in
-            guard let self, !self.browserHintShown.contains(kind) else { return }
-            self.browserHintShown.insert(kind)
-            let menu = kind == .safari
-                ? "меню «Разработка» → «Разрешить JavaScript из Apple Events»"
-                : "меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events»"
-            self.post(NotchBanner(
-                icon: .app(kind.bundleID),
-                tint: .white,
-                title: "Открыл вкладку — нажми там ⏯",
-                subtitle: "Чтобы управлять видео прямо из чёлки, пока играет музыка, включи в браузере \(menu).",
-                duration: 8,
-                expanded: true
             ))
         }
         nowPlaying.onTrackChange = { [weak self] track in
@@ -307,6 +291,16 @@ final class NotchViewModel {
     }
 
     // MARK: Media deck
+
+    /// Свайп по чёлке: следующая или предыдущая карточка плеера.
+    func swipeDeck(next: Bool) {
+        let target = deckIndex + (next ? 1 : -1)
+        guard target >= 0, target < nowPlaying.items.count else { return }
+        selectDeck(target)
+        if Pref.bool(Pref.haptics) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        }
+    }
 
     func selectDeck(_ index: Int) {
         let clamped = min(max(index, 0), max(nowPlaying.items.count - 1, 0))

@@ -323,13 +323,14 @@ private struct MediaCard: View {
                 Text(item.sourceLabel)
                     .lineLimit(1)
                     .foregroundStyle(Theme.secondaryText)
+                // «Играет» — цветом обложки, как эквалайзер.
+                let tint = Color(nsColor: item.accent)
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(item.isPlaying ? Theme.liveGreen : Color.white.opacity(0.45))
+                        .fill(item.isPlaying ? tint : Color.white.opacity(0.45))
                         .frame(width: 5, height: 5)
-                        .shadow(color: item.isPlaying ? Theme.liveGreen : .clear, radius: 3)
                     Text(item.isPlaying ? "Играет" : "Пауза")
-                        .foregroundStyle(item.isPlaying ? Theme.liveGreen : Theme.tertiaryText)
+                        .foregroundStyle(item.isPlaying ? tint : Theme.tertiaryText)
                         .contentTransition(.opacity)
                 }
                 .fixedSize()
@@ -349,10 +350,15 @@ private struct MediaCard: View {
             }
             .padding(.top, 3)
 
-            Text(item.subtitle.isEmpty ? " " : item.subtitle)
-                .font(.system(size: 13.5))
-                .foregroundStyle(Theme.secondaryText)
-                .lineLimit(1)
+            if let issue = vm.nowPlaying.controlIssues[item.id] {
+                ControlIssueRow(issue: issue) { vm.nowPlaying.enableBrowserJavaScript(for: item) }
+                    .transition(.opacity)
+            } else {
+                Text(item.subtitle.isEmpty ? " " : item.subtitle)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(Theme.secondaryText)
+                    .lineLimit(1)
+            }
 
             ProgressRow(item: item)
                 .padding(.top, 9)
@@ -365,7 +371,7 @@ private struct MediaCard: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 2) {
             controlButton(item.isVideo ? "gobackward.10" : "backward.fill", help: item.isVideo ? "Назад на 10 секунд" : "Предыдущий трек") {
                 vm.nowPlaying.skip(item, forward: false)
             }
@@ -373,10 +379,10 @@ private struct MediaCard: View {
                 vm.nowPlaying.toggle(item)
             } label: {
                 Image(systemName: item.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .contentTransition(.symbolEffect(.replace))
-                    .frame(width: 42, height: 42)
-                    .glass(21)
+                    .frame(width: 36, height: 36)
+                    .glass(18)
             }
             .buttonStyle(PressableButtonStyle(scale: 0.84))
             .help(item.isPlaying ? "Пауза" : "Играть")
@@ -414,12 +420,53 @@ private struct MediaCard: View {
     private func controlButton(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 32, height: 32)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.85))
+                .frame(width: 26, height: 26)
                 .contentShape(Circle())
         }
         .buttonStyle(PressableButtonStyle(scale: 0.8))
         .help(help)
+    }
+}
+
+/// Почему кнопка не сработала — одной строкой вместо исполнителя, с кнопкой «Включить».
+private struct ControlIssueRow: View {
+    let issue: NowPlayingService.ControlIssue
+    var enable: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            switch issue {
+            case .browserJavaScript:
+                message("Чтобы управлять видео отсюда, нужен JavaScript в браузере")
+                Button("Включить", action: enable)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 8)
+                    .frame(height: 18)
+                    .background(Capsule().fill(Color.white))
+                    .fixedSize()
+            case .enablingJavaScript:
+                ProgressView().controlSize(.mini)
+                message("Включаю в меню браузера…")
+            case .browserJavaScriptManual:
+                message("В меню браузера: Вид → Разработчикам → Разрешить JavaScript из Apple Events")
+            case .notCurrent:
+                message("macOS сейчас управляет другим плеером — нажми ⏯ в самом приложении")
+            }
+        }
+        .frame(height: 18)
+    }
+
+    private func message(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11.5))
+            .foregroundStyle(Theme.orange)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .help(text)
     }
 }
 

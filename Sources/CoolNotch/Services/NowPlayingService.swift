@@ -173,8 +173,19 @@ final class NowPlayingService {
     private(set) var systemStatus = "Ждём данные…"
 
     @ObservationIgnored var onTrackChange: (@MainActor (NowPlayingTrack) -> Void)?
-    /// Вкладкой браузера нельзя управлять напрямую: выключен «JavaScript из Apple Events».
-    @ObservationIgnored var onBrowserControlUnavailable: (@MainActor (BrowserKind) -> Void)?
+    /// Почему не получилось управлять карточкой — показывается прямо на ней.
+    enum ControlIssue: Equatable {
+        /// Браузер не пускает JavaScript — можно включить одной кнопкой.
+        case browserJavaScript(BrowserKind)
+        /// Включаем пункт в меню браузера.
+        case enablingJavaScript
+        /// Включить автоматически не вышло — подсказываем, где пункт меню.
+        case browserJavaScriptManual(BrowserKind)
+        /// macOS отдаёт команды только «текущему» плееру, а у этого приложения нет своего управления.
+        case notCurrent
+    }
+
+    private(set) var controlIssues: [PlayerSource: ControlIssue] = [:]
     @ObservationIgnored private var pending: [PlayerSource: PendingPlayback] = [:]
     @ObservationIgnored private var settleTask: Task<Void, Never>?
 
@@ -266,27 +277,106 @@ final class NowPlayingService {
 
     // MARK: - Per-item commands
 
-    /// Пауза/воспроизведение конкретной карточки. Запуск одной ставит остальные на паузу — как в системе.
-    /// Команды явные (play/pause, а не «переключить») и адресованы именно этому источнику.
+    /// Пауза/воспроизведение конкретной карточки. Запуск одной ставит остальные на паузу — как в системе,
+    /// но только когда она действительно запустилась. Если управлять не получилось, карточка
+    /// возвращается в прежнее состояние и объясняет почему (а не «играет» с бегущим временем).
     func toggle(_ item: MediaItem) {
         let willPlay = !item.isPlaying
         let now = Date()
-        if willPlay {
-            for other in items where other.isPlaying && other.id != item.id {
-                markLocal(other.id, playing: false, at: now)
-                if !isDemo { setPlayback(other.id, playing: false) }
+        if isDemo {
+            if willPlay {
+                for other in items where other.isPlaying && other.id != item.id { markLocal(other.id, playing: false, at: now) }
             }
+            markLocal(item.id, playing: willPlay, at: now)
+            recompute()
+            return
         }
         markLocal(item.id, playing: willPlay, at: now)
         recompute()
-        if isDemo { return }
         setPlayback(item.id, playing: willPlay) { [weak self] succeeded in
-            guard let self, !succeeded else { return }
-            // Напрямую не получилось (браузер не пускает JavaScript) — показываем вкладку, дальше сам.
-            self.pending[item.id] = nil
-            self.open(item)
-            if let kind = item.id.browserKind { self.onBrowserControlUnavailable?(kind) }
-            self.scheduleRefresh()
+            guard let self else { return }
+            guard succeeded else {
+                self.commandFailed(item, revertTo: item.isPlaying)
+                return
+            }
+            self.controlIssues[item.id] = nil
+            if willPlay {
+                for other in self.items where other.isPlaying && other.id != item.id {
+                    self.markLocal(other.id, playing: false, at: Date())
+                    self.setPlayback(other.id, playing: false)
+                }
+                self.recompute()
+            }
+        }
+    }
+
+    /// Команда не дошла: откатываем состояние и показываем причину на карточке.
+    private func commandFailed(_ item: MediaItem, revertTo playing: Bool) {
+        pending[item.id] = nil
+        if var candidate = candidates[item.id] {
+            candidate.isPlaying = playing
+            candidate.elapsedTimestamp = Date()
+            candidates[item.id] = candidate
+        }
+        if let kind = item.id.browserKind {
+            controlIssues[item.id] = .browserJavaScript(kind)
+        } else {
+            controlIssues[item.id] = .notCurrent
+        }
+        recompute()
+    }
+
+    /// Включает в браузере «Разрешить JavaScript из Apple Events» через его меню (нужны
+    /// «Универсальный доступ» и разрешение управлять System Events). После этого видео
+    /// во вкладках управляется из чёлки, даже когда «текущий» плеер в системе другой.
+    func enableBrowserJavaScript(for item: MediaItem) {
+        guard let kind = item.id.browserKind else { return }
+        let previous = NSWorkspace.shared.frontmostApplication
+        controlIssues[item.id] = .enablingJavaScript
+        let script = """
+        tell application id "\(kind.bundleID)" to activate
+        delay 0.4
+        tell application "System Events"
+            set p to first application process whose bundle identifier is "\(kind.bundleID)"
+            repeat with barItem in menu bar items of menu bar 1 of p
+                try
+                    repeat with entry in menu items of menu 1 of barItem
+                        try
+                            set n to name of entry
+                            if n is not missing value and n contains "JavaScript" and n contains "Apple" then
+                                if (value of attribute "AXMenuItemMarkChar" of entry) is missing value then click entry
+                                return "ok"
+                            end if
+                            repeat with sub in menu items of menu 1 of entry
+                                set n2 to name of sub
+                                if n2 is not missing value and n2 contains "JavaScript" and n2 contains "Apple" then
+                                    if (value of attribute "AXMenuItemMarkChar" of sub) is missing value then click sub
+                                    return "ok"
+                                end if
+                            end repeat
+                        end try
+                    end repeat
+                end try
+            end repeat
+        end tell
+        return "notfound"
+        """
+        runner.run(script, parse: { $0.stringValue }) { [weak self] result in
+            guard let self else { return }
+            if let previous, previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                previous.activate()
+            }
+            guard result == "ok" else {
+                self.controlIssues[item.id] = .browserJavaScriptManual(kind)
+                return
+            }
+            // Получилось — сразу выполняем то, что пользователь хотел: запускаем видео.
+            for (source, issue) in self.controlIssues where issue == .enablingJavaScript || issue == .browserJavaScript(kind) {
+                self.controlIssues[source] = nil
+            }
+            if let fresh = self.items.first(where: { $0.id == item.id }), !fresh.isPlaying {
+                self.toggle(fresh)
+            }
         }
     }
 
@@ -342,6 +432,7 @@ final class NowPlayingService {
     }
 
     func seek(_ item: MediaItem, to seconds: Double) {
+        let previous = candidates[item.id].map { ($0.elapsed, $0.elapsedTimestamp) }
         if var candidate = candidates[item.id] {
             candidate.elapsed = seconds
             candidate.elapsedTimestamp = Date()
@@ -355,10 +446,32 @@ final class NowPlayingService {
             runner.run("tell application id \"\(item.id.bundleID)\" to set player position to \(value)")
             scheduleRefresh()
         case .browser(let kind):
-            browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL)
-            scheduleRefresh()
+            seekInBrowser(item, kind: kind, to: seconds, previous: previous)
         case .system:
-            if candidates[item.id]?.isLive != false { bridge.send("seek \(value)") }
+            if candidates[item.id]?.isLive != false {
+                bridge.send("seek \(value)")
+            } else if let kind = item.id.browserKind {
+                seekInBrowser(item, kind: kind, to: seconds, previous: previous)
+            } else {
+                commandFailed(item, revertTo: item.isPlaying)
+            }
+        }
+    }
+
+    private func seekInBrowser(_ item: MediaItem, kind: BrowserKind, to seconds: Double, previous: (Double, Date)?) {
+        browser.perform(.seek(seconds), in: kind, url: candidates[item.id]?.tabURL) { [weak self] succeeded in
+            guard let self else { return }
+            if succeeded {
+                self.controlIssues[item.id] = nil
+                self.scheduleRefresh()
+            } else {
+                if let previous, var candidate = self.candidates[item.id] {
+                    candidate.elapsed = previous.0
+                    candidate.elapsedTimestamp = previous.1
+                    self.candidates[item.id] = candidate
+                }
+                self.commandFailed(item, revertTo: item.isPlaying)
+            }
         }
     }
 
@@ -546,6 +659,7 @@ final class NowPlayingService {
     }
 
     private func removeCandidate(_ source: PlayerSource) {
+        controlIssues[source] = nil
         guard candidates.removeValue(forKey: source) != nil else { return }
         recompute()
     }
@@ -874,6 +988,7 @@ final class NowPlayingService {
                 switched = true
             }
             candidates[source]?.isLive = true
+            controlIssues[source] = nil
             if switched { scheduleSettle() }
 
             let key = "system|\(info.title)|\(info.artist)|\(info.album)"
