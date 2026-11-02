@@ -157,13 +157,52 @@ final class UpdateService {
         let assets: [Asset]
     }
 
-    /// Последний релиз. С «тестовыми сборками» учитываются и предварительные релизы из разработки.
+    /// Маленький файл update.json, который сборка кладёт в релиз. Скачивается как обычный файл
+    /// релиза — у этого нет лимита GitHub API (60 запросов в час на адрес), из-за которого
+    /// проверка иногда писала «GitHub временно ограничил запросы».
+    private struct Manifest: Decodable {
+        let build: Int
+        let version: String
+        let tag: String
+        let prerelease: Bool?
+        let zip: URL
+        let page: URL?
+    }
+
+    /// Последний релиз. С «тестовыми сборками» — самая свежая сборка, включая тестовые.
     private func fetchLatest() async throws -> Release? {
+        if let release = try? await fetchManifest() { return release }
+        return try await fetchFromAPI()
+    }
+
+    private func fetchManifest() async throws -> Release? {
+        let beta = Pref.bool(Pref.betaUpdates)
+        let path = beta ? "releases/download/beta/update.json" : "releases/latest/download/update.json"
+        var request = URLRequest(url: URL(string: "https://github.com/\(Self.repository)/\(path)")!)
+        request.setValue("Halo/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 20
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw UpdateError.message("Нет файла обновления.")
+        }
+        let manifest = try JSONDecoder().decode(Manifest.self, from: data)
+        return Release(
+            version: (manifest.prerelease ?? false) ? "\(manifest.version) (тестовая)" : manifest.version,
+            build: manifest.build,
+            notes: "",
+            zipURL: manifest.zip,
+            pageURL: manifest.page
+        )
+    }
+
+    /// Запасной путь — GitHub API (у старых релизов ещё нет update.json).
+    private func fetchFromAPI() async throws -> Release? {
         let beta = Pref.bool(Pref.betaUpdates)
         let path = beta ? "releases?per_page=20" : "releases/latest"
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repository)/\(path)")!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("CoolNotch/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Halo/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {

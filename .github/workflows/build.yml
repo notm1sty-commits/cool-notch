@@ -95,6 +95,36 @@ jobs:
           path: .build/app/Halo.dmg
           if-no-files-found: error
 
+      # Маленький файл для проверки обновлений: номер сборки и ссылка на архив. Приложение
+      # скачивает его как обычный файл релиза — без GitHub API и его лимита 60 запросов в час.
+      - name: Update manifest
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/') || startsWith(github.ref, 'refs/tags/v')
+        env:
+          BUILD: ${{ github.run_number }}
+          VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('0.3.{0}', github.run_number) }}
+        run: |
+          TAG="build-$BUILD"
+          PRERELEASE=false
+          case "$GITHUB_REF" in
+            refs/tags/v*) TAG="$GITHUB_REF_NAME" ;;
+            refs/heads/claude/*) PRERELEASE=true ;;
+          esac
+          python3 - "$TAG" "$PRERELEASE" <<'PY'
+          import json, os, sys
+          tag, prerelease = sys.argv[1], sys.argv[2] == "true"
+          repo = os.environ["GITHUB_REPOSITORY"]
+          version = os.environ["VERSION"].lstrip("v")
+          json.dump({
+              "build": int(os.environ["BUILD"]),
+              "version": version,
+              "tag": tag,
+              "prerelease": prerelease,
+              "zip": f"https://github.com/{repo}/releases/download/{tag}/Halo.zip",
+              "page": f"https://github.com/{repo}/releases/tag/{tag}",
+          }, open(".build/app/update.json", "w"), ensure_ascii=False)
+          PY
+          cat .build/app/update.json
+
       # Каждая сборка main становится релизом — кнопка «Обновить» в приложении берёт его отсюда.
       - name: Publish build release
         if: github.ref == 'refs/heads/main'
@@ -108,6 +138,7 @@ jobs:
           files: |
             .build/app/Halo.dmg
             .build/app/Halo.zip
+            .build/app/update.json
 
       # Сборки из веток разработки — «тестовые» (предварительные) релизы. Их видит кнопка
       # «Обновить», если в настройках включены «Тестовые сборки».
@@ -124,6 +155,21 @@ jobs:
           files: |
             .build/app/Halo.dmg
             .build/app/Halo.zip
+            .build/app/update.json
+
+      # Тестовый канал: постоянный релиз «beta», где update.json всегда указывает на самую
+      # свежую сборку (тестовую или из main). Его читают те, у кого включены «Тестовые сборки».
+      - name: Publish beta channel
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/claude/')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: beta
+          name: Halo — тестовый канал (build ${{ github.run_number }})
+          prerelease: true
+          make_latest: "false"
+          body: Служебный релиз для кнопки «Обновить» с включёнными «Тестовыми сборками». Скачивать Halo лучше из обычного релиза.
+          files: |
+            .build/app/update.json
 
       # Тестовые сборки не копятся: после сборки main удаляются все тестовые релизы
       # (вместе с архивами и тегами), после тестовой остаются только три последние.
@@ -135,7 +181,7 @@ jobs:
           keep=3
           if [ "$GITHUB_REF" = "refs/heads/main" ]; then keep=0; fi
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName,isPrerelease,createdAt \
-            --jq "[.[] | select(.isPrerelease)] | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName" |
+            --jq "[.[] | select(.isPrerelease and .tagName != \"beta\")] | sort_by(.createdAt) | reverse | .[$keep:] | .[].tagName" |
           while read -r tag; do
             if [ -n "$tag" ]; then
               echo "Удаляю $tag"
@@ -152,4 +198,5 @@ jobs:
           files: |
             .build/app/Halo.dmg
             .build/app/Halo.zip
+            .build/app/update.json
           generate_release_notes: true
