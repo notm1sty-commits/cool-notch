@@ -28,6 +28,8 @@
 	<string>public.app-category.utilities</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Halo слушает звук, который играет на Маке, чтобы эквалайзер двигался в такт музыке. Звук не записывается и никуда не отправляется — считается только громкость.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Halo показывает, что играет в Spotify, Музыке и в браузере (Яндекс Музыка, YouTube), и позволяет управлять воспроизведением прямо из чёлки.</string>
 	<key>NSHumanReadableCopyright</key>

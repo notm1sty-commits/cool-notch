@@ -61,13 +61,14 @@ struct ArtworkView: View {
 
 // MARK: - Equalizer
 
-/// Эквалайзер на Core Animation: анимацию крутит системный рендер-сервер,
-/// приложение при этом не просыпается каждый кадр — это заметно экономит батарею.
-/// Столбики-капсулы «дышат» от центра по неповторяющимся траекториям, как живой звук.
+/// Эквалайзер: пять почти прямоугольных столбиков цвета обложки.
+/// Пока играет музыка, они двигаются под настоящий звук Мака (басы → верха, см. AudioLevelMeter).
+/// Без разрешения, на macOS старше 14.2 и в режиме энергосбережения — спокойная волна на Core Animation:
+/// её крутит системный рендер-сервер, приложение при этом не просыпается каждый кадр.
 struct EqualizerView: NSViewRepresentable {
     var color: NSColor
     var isPlaying: Bool
-    /// В режиме энергосбережения анимация остаётся, но с меньшей частотой кадров.
+    /// В режиме энергосбережения — только волна и с меньшей частотой кадров.
     var lowPower = false
 
     func makeNSView(context: Context) -> EqualizerNSView {
@@ -80,26 +81,42 @@ struct EqualizerView: NSViewRepresentable {
 }
 
 final class EqualizerNSView: NSView {
-    private let barCount = 4
+    private static let barCount = AudioLevelMeter.bandCount
     private var bars: [CALayer] = []
     private var color: NSColor = .white
     private var isPlaying = false
     private var lowPower = false
+    /// Подписан на настоящий звук.
+    private var listening = false
+    /// Сейчас столбики идут за настоящим звуком (а не за волной).
+    private var live = false
+    /// Когда запустили волну: все столбики считают фазу от одного момента, поэтому волна
+    /// остаётся цельной, даже если анимацию одного столбика пришлось восстановить.
+    private var waveStart: CFTimeInterval?
 
-    /// Траектории высоты каждого столбика (первая точка = последней, чтобы цикл был бесшовным).
-    private static let paths: [[CGFloat]] = [
-        [0.38, 0.92, 0.52, 1.0, 0.42, 0.78, 0.38],
-        [0.66, 0.34, 1.0, 0.56, 0.88, 0.3, 0.66],
-        [0.46, 1.0, 0.36, 0.82, 0.5, 0.96, 0.46],
-        [0.82, 0.42, 0.72, 0.32, 1.0, 0.56, 0.82],
-    ]
-    private static let durations: [CFTimeInterval] = [1.55, 1.3, 1.7, 1.45]
-    private static let restScale: CGFloat = 0.28
+    /// Одна волна проходит по столбикам за ~1,9 с; нарастает и стихает она раз в четыре волны.
+    private static let wavePeriod: CFTimeInterval = 1.9
+    private static let swellWaves = 4
+    private static var cycle: CFTimeInterval { wavePeriod * Double(swellWaves) }
+    private static let restScale: CGFloat = 0.3
+    /// Под звуком: тишина — низкий столбик, но не пропадает совсем.
+    private static let liveFloor: CGFloat = 0.2
+
+    /// Высота каждого столбика на весь цикл волны (первая точка = последней — цикл бесшовный).
+    private static let paths: [[CGFloat]] = (0..<barCount).map { index in
+        let samples = 96
+        return (0...samples).map { step in
+            let t = cycle * Double(step) / Double(samples)
+            let swell = 0.65 + 0.35 * sin(2 * .pi * t / cycle)
+            let wave = sin(2 * .pi * t / wavePeriod - Double(index) * 0.85)
+            return CGFloat(0.55 + 0.33 * swell * wave)
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        bars = (0..<barCount).map { _ in
+        bars = (0..<Self.barCount).map { _ in
             let bar = CALayer()
             bar.backgroundColor = NSColor.white.cgColor
             bar.transform = CATransform3DMakeScale(1, Self.restScale, 1)
@@ -129,6 +146,7 @@ final class EqualizerNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         attachBars()
+        updateListening()
         applyAnimations(force: true)
     }
 
@@ -137,13 +155,15 @@ final class EqualizerNSView: NSView {
         attachBars()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        // Ширина столбиков подстраивается под место: 4 капсулы с зазором в 0,7 ширины.
-        let width = max(2, min(3.2, bounds.width / (CGFloat(barCount) * 1.7)))
+        // Ширина столбиков подстраивается под место, зазор — 0,7 ширины.
+        let count = CGFloat(Self.barCount)
+        let width = max(2, min(3.2, bounds.width / (count * 1.7)))
         let spacing = width * 0.7
-        let total = CGFloat(barCount) * width + CGFloat(barCount - 1) * spacing
+        let total = count * width + (count - 1) * spacing
         var x = (bounds.width - total) / 2
         for bar in bars {
-            bar.cornerRadius = width / 2
+            // Почти прямоугольные: лишь чуть скруглённые углы.
+            bar.cornerRadius = min(0.8, width * 0.25)
             bar.bounds = CGRect(x: 0, y: 0, width: width, height: bounds.height)
             bar.position = CGPoint(x: x + width / 2, y: bounds.midY)
             x += width + spacing
@@ -170,23 +190,87 @@ final class EqualizerNSView: NSView {
         let changed = isPlaying != self.isPlaying || lowPower != self.lowPower
         self.isPlaying = isPlaying
         self.lowPower = lowPower
+        updateListening()
         applyAnimations(force: changed)
     }
 
-    /// Ставит или снимает анимацию. Без `force` только чинит пропавшие анимации.
+    // MARK: Настоящий звук
+
+    /// Слушаем звук, только пока играет музыка, вью в окне и нет режима энергосбережения.
+    private func updateListening() {
+        let wants = isPlaying && window != nil && !lowPower && Pref.bool(Pref.liveEqualizer)
+        guard wants != listening else { return }
+        listening = wants
+        if wants {
+            AudioLevelMeter.shared.subscribe(self) { [weak self] levels, isLive in
+                self?.receive(levels, isLive: isLive)
+            }
+        } else {
+            AudioLevelMeter.shared.unsubscribe(self)
+            setLive(false)
+        }
+    }
+
+    private func receive(_ levels: [Float], isLive: Bool) {
+        guard listening, isPlaying else { return }
+        setLive(isLive)
+        guard isLive else { return }
+        // Короткая линейная анимация между замерами (~30 в секунду) — движение плавное, без ступенек.
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.07)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .linear))
+        for (index, bar) in bars.enumerated() {
+            let level = CGFloat(index < levels.count ? levels[index] : 0)
+            let scale = Self.liveFloor + (1 - Self.liveFloor) * level
+            bar.transform = CATransform3DMakeScale(1, scale, 1)
+        }
+        CATransaction.commit()
+    }
+
+    /// Переход между настоящим звуком и волной.
+    private func setLive(_ isLive: Bool) {
+        guard isLive != live else { return }
+        live = isLive
+        if isLive {
+            // Волну снимаем с того места, где она была, — дальше столбики ведёт звук.
+            for bar in bars {
+                let current = bar.presentation()?.value(forKeyPath: "transform.scale.y") as? CGFloat ?? Self.restScale
+                bar.removeAnimation(forKey: "eq")
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                bar.transform = CATransform3DMakeScale(1, current, 1)
+                CATransaction.commit()
+            }
+            waveStart = nil
+        } else {
+            applyAnimations(force: true)
+        }
+    }
+
+    // MARK: Волна
+
+    /// Ставит или снимает волну. Без `force` только чинит пропавшие анимации.
     private func applyAnimations(force: Bool) {
+        guard !(live && isPlaying) else { return }
+        if isPlaying {
+            if force || waveStart == nil { waveStart = CACurrentMediaTime() }
+        } else {
+            waveStart = nil
+        }
         for (index, bar) in bars.enumerated() {
             let running = bar.animation(forKey: "eq") != nil
-            if isPlaying {
+            if isPlaying, let waveStart {
                 guard force || !running else { continue }
                 bar.removeAnimation(forKey: "eq")
                 bar.transform = CATransform3DIdentity
                 let animation = CAKeyframeAnimation(keyPath: "transform.scale.y")
                 animation.values = Self.paths[index % Self.paths.count]
                 animation.calculationMode = .cubic
-                animation.duration = Self.durations[index % Self.durations.count]
+                animation.duration = Self.cycle
                 animation.repeatCount = .infinity
-                animation.timeOffset = Double(index) * 0.23
+                // Общая точка отсчёта для всех столбиков — фазы не разъезжаются.
+                animation.beginTime = bar.convertTime(waveStart, from: nil)
+                animation.fillMode = .backwards
                 animation.isRemovedOnCompletion = false
                 animation.preferredFrameRateRange = lowPower
                     ? CAFrameRateRange(minimum: 10, maximum: 15, preferred: 15)

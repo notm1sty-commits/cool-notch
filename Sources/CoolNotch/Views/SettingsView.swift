@@ -17,6 +17,7 @@ struct SettingsView: View {
     @AppStorage(Pref.haptics) var haptics = true
     @AppStorage(Pref.showMusicActivity) var showMusic = true
     @AppStorage(Pref.showChargingActivity) var showCharging = true
+    @AppStorage(Pref.liveEqualizer) var liveEqualizer = true
     @AppStorage(Pref.showClockActivity) var showClock = true
     @AppStorage(Pref.showShelfActivity) var showShelf = true
     @AppStorage(Pref.showLowBattery) var showLowBattery = true
@@ -115,6 +116,10 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        Toggle("Эквалайзер под настоящий звук", isOn: $liveEqualizer)
+                        if liveEqualizer {
+                            AudioCaptureRow()
+                        }
                         Toggle("Музыка из браузера (Яндекс Музыка, YouTube, SoundCloud, VK)", isOn: $browserMusic)
                         if browserMusic {
                             Text("Один раз включи в браузере разрешение:\n• Chrome / Яндекс Браузер / Edge: меню «Вид» → «Разработчикам» → «Разрешить JavaScript из Apple Events».\n• Safari: «Настройки» → «Дополнения» → «Показывать функции для веб-разработчиков», затем меню «Разработка» → «Разрешить JavaScript из Apple Events».")
@@ -260,6 +265,44 @@ struct SettingsView: View {
 }
 
 /// Статус доступа к уведомлениям и подсказки.
+/// Разрешение «Запись системного звука» для эквалайзера: статус и кнопка.
+private struct AudioCaptureRow: View {
+    @State private var status = AudioCapturePermission.status
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Group {
+                    switch status {
+                    case .authorized:
+                        Label("Разрешено", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    case .denied:
+                        Label("Не разрешено", systemImage: "xmark.circle.fill").foregroundStyle(.orange)
+                    case .unknown:
+                        Label("Ещё не спрашивали", systemImage: "questionmark.circle").foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+                Spacer()
+                if status != .authorized {
+                    Button(status == .denied ? "Открыть настройки" : "Разрешить") {
+                        if status == .denied {
+                            AudioCapturePermission.openSettings()
+                        } else {
+                            AudioCapturePermission.request { _ in status = AudioCapturePermission.status }
+                        }
+                    }
+                }
+            }
+            Text("Столбики двигаются под музыку: басы слева, верха справа. Нужны macOS 14.2+ и разрешение «Запись системного звука» — звук не записывается и никуда не уходит, считается только громкость. Без разрешения и в режиме энергосбережения эквалайзер показывает спокойную волну.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onAppear { status = AudioCapturePermission.status }
+    }
+}
+
 private struct NotificationAccessRow: View {
     let mirror: NotificationMirror
 

@@ -13,6 +13,8 @@ enum Pref {
     static let deviceBanners = "deviceBanners"
     static let browserMusic = "browserMusic"
     static let systemNowPlaying = "systemNowPlaying"
+    /// Эквалайзер под настоящий звук (нужно разрешение «Запись системного звука»).
+    static let liveEqualizer = "liveEqualizer"
     static let systemNotifications = "systemNotifications"
     static let notchStyle = "notchStyle"
     static let fx3D = "fx3D"
@@ -41,6 +43,7 @@ enum Pref {
             deviceBanners: true,
             browserMusic: false,
             systemNowPlaying: true,
+            liveEqualizer: true,
             systemNotifications: true,
             notchStyle: "black",
             fx3D: true,
