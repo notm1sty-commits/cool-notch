@@ -22,10 +22,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Pref.betaUpdates, Pref.clipboardHistory, Pref.openOnFileDrag, Pref.timerSound, "appColorOverrides",
     ]
 
+    func applicationWillTerminate(_ notification: Notification) {
+        AudioLevelMeter.markStopped()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Приложение переименовано в Halo: если старая обновлялка положила нас как «Cool Notch.app»,
         // переименовываем папку и перезапускаемся уже оттуда.
         if AppRelocation.renameLegacyBundleIfNeeded() { return }
+        // Прошлый запуск закончился сбоем, пока эквалайзер слушал звук, — выключаем это сразу.
+        AudioLevelMeter.recoverAfterCrash()
         // Зажатая клавиша в полях чёлки повторяет букву, а не ждёт меню букв с акцентами
         // (иначе в заметке нельзя зажать, например, «а» или «.»). Только для Halo.
         let ownDefaults = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "") ?? [:]

@@ -122,6 +122,12 @@ struct SettingsView: View {
                             Text("Под настоящий звук").tag(true)
                         }
                         .pickerStyle(.segmented)
+                        if !liveEqualizer, UserDefaults.standard.bool(forKey: AudioLevelMeter.disabledAfterCrashKey) {
+                            Text("«Под настоящий звук» выключено автоматически: в прошлый раз Halo закрылся с ошибкой, пока эквалайзер слушал звук. Можно включить снова.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                         if liveEqualizer {
                             AudioCaptureRow()
                             VStack(alignment: .leading, spacing: 4) {

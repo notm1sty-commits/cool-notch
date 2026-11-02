@@ -25,6 +25,26 @@ final class AudioLevelMeter {
     private var cooldownUntil = Date.distantPast
     private var deviceListener: AudioObjectPropertyListenerBlock?
     private var defaultsObserver: NSObjectProtocol?
+    private var lastEnabled = Pref.bool(Pref.liveEqualizer)
+
+    /// Отвод звука сейчас работает. Если приложение завершилось аварийно, пока он работал,
+    /// при следующем запуске «настоящий звук» выключается сам — чтобы не вылетать снова и снова.
+    private static let runningKey = "audioTapRunning"
+    static let disabledAfterCrashKey = "liveEqualizerDisabledAfterCrash"
+
+    /// При запуске: прошлый раз закончился сбоем во время отвода — выключаем «настоящий звук».
+    static func recoverAfterCrash() {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: runningKey) else { return }
+        defaults.set(false, forKey: runningKey)
+        defaults.set(false, forKey: Pref.liveEqualizer)
+        defaults.set(true, forKey: disabledAfterCrashKey)
+    }
+
+    /// При обычном выходе отвод не считается сбоем.
+    static func markStopped() {
+        UserDefaults.standard.set(false, forKey: runningKey)
+    }
     private static var defaultDeviceAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal,
@@ -49,7 +69,12 @@ final class AudioLevelMeter {
     }
 
     private func preferenceChanged() {
+        // Реагируем только на сам переключатель: UserDefaults меняются по сотне поводов, и раньше
+        // каждый такой повод снова запускал отвод звука (даже после неудачи).
         let enabled = Pref.bool(Pref.liveEqualizer)
+        guard enabled != lastEnabled else { return }
+        lastEnabled = enabled
+        if enabled { UserDefaults.standard.removeObject(forKey: Self.disabledAfterCrashKey) }
         if !enabled, engine != nil {
             stop()
         } else if enabled, engine == nil, !subscribers.isEmpty {
@@ -84,16 +109,19 @@ final class AudioLevelMeter {
         let tap = SystemAudioTap { [weak self] levels, live, silentSinceStart in
             self?.deliver(levels, live: live, silentSinceStart: silentSinceStart)
         }
+        UserDefaults.standard.set(true, forKey: Self.runningKey)
         if tap.start() {
             engine = tap
         } else {
             tap.stop()
+            Self.markStopped()
             cooldownUntil = Date().addingTimeInterval(60)
         }
     }
 
     private func stop() {
         if #available(macOS 14.2, *), let tap = engine as? SystemAudioTap { tap.stop() }
+        if engine != nil { Self.markStopped() }
         engine = nil
         if isLive {
             isLive = false
