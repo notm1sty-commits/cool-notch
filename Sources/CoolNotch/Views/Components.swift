@@ -84,6 +84,7 @@ final class EqualizerNSView: NSView {
     private static let barCount = AudioLevelMeter.bandCount
     private var bars: [CALayer] = []
     private var color: NSColor = .white
+    private var hasColor = false
     private var isPlaying = false
     private var lowPower = false
     /// Подписан на настоящий звук.
@@ -173,7 +174,16 @@ final class EqualizerNSView: NSView {
     }
 
     func update(color: NSColor, isPlaying: Bool, lowPower: Bool) {
-        if color != self.color {
+        if !hasColor {
+            // Эквалайзер создаётся заново при каждом открытии и закрытии чёлки — сразу в нужном цвете,
+            // без «перетекания» из белого.
+            hasColor = true
+            self.color = color
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            for bar in bars { bar.backgroundColor = color.cgColor }
+            CATransaction.commit()
+        } else if color != self.color {
             self.color = color
             // Плавное перетекание в цвет новой обложки.
             for bar in bars {
@@ -198,7 +208,9 @@ final class EqualizerNSView: NSView {
 
     /// Слушаем звук, только пока играет музыка, вью в окне и нет режима энергосбережения.
     private func updateListening() {
-        let wants = isPlaying && window != nil && !lowPower && Pref.bool(Pref.liveEqualizer)
+        // Включён ли «настоящий звук» в настройках, решает AudioLevelMeter: если нет, он просто
+        // сообщает «не вживую», и здесь идёт волна. Так переключатель срабатывает сразу.
+        let wants = isPlaying && window != nil && !lowPower
         guard wants != listening else { return }
         listening = wants
         if wants {

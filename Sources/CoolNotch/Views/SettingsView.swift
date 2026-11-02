@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage(Pref.showMusicActivity) var showMusic = true
     @AppStorage(Pref.showChargingActivity) var showCharging = true
     @AppStorage(Pref.liveEqualizer) var liveEqualizer = true
+    @AppStorage(Pref.eqSensitivity) var eqSensitivity = 1.0
     @AppStorage(Pref.showClockActivity) var showClock = true
     @AppStorage(Pref.showShelfActivity) var showShelf = true
     @AppStorage(Pref.showLowBattery) var showLowBattery = true
@@ -116,9 +117,27 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        Toggle("Эквалайзер под настоящий звук", isOn: $liveEqualizer)
+                        Picker("Эквалайзер", selection: $liveEqualizer) {
+                            Text("Волна").tag(false)
+                            Text("Под настоящий звук").tag(true)
+                        }
+                        .pickerStyle(.segmented)
                         if liveEqualizer {
                             AudioCaptureRow()
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Чувствительность: \(sensitivityText)")
+                                Slider(value: $eqSensitivity, in: 0.5...2) {
+                                    EmptyView()
+                                } minimumValueLabel: {
+                                    Image(systemName: "speaker.wave.1").foregroundStyle(.secondary)
+                                } maximumValueLabel: {
+                                    Image(systemName: "speaker.wave.3").foregroundStyle(.secondary)
+                                }
+                                Text("Выше — столбики выше и сильнее реагируют на тихие звуки. Ниже — спокойнее, двигаются только на громком.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                         Toggle("Музыка из браузера (Яндекс Музыка, YouTube, SoundCloud, VK)", isOn: $browserMusic)
                         if browserMusic {
@@ -222,6 +241,15 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    private var sensitivityText: String {
+        switch eqSensitivity {
+        case ..<0.8: return "низкая"
+        case ..<1.25: return "обычная"
+        case ..<1.65: return "высокая"
+        default: return "максимальная"
         }
     }
 

@@ -24,6 +24,7 @@ final class AudioLevelMeter {
     /// Отвод не дал ни звука (скорее всего, нет разрешения) — не пробуем снова какое-то время.
     private var cooldownUntil = Date.distantPast
     private var deviceListener: AudioObjectPropertyListenerBlock?
+    private var defaultsObserver: NSObjectProtocol?
     private static var defaultDeviceAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
         mScope: kAudioObjectPropertyScopeGlobal,
@@ -39,6 +40,22 @@ final class AudioLevelMeter {
         }
         deviceListener = block
         AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &Self.defaultDeviceAddress, DispatchQueue.main, block)
+        // Переключили «Волна / Под настоящий звук» в настройках — применяем сразу.
+        defaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.preferenceChanged() }
+        }
+    }
+
+    private func preferenceChanged() {
+        let enabled = Pref.bool(Pref.liveEqualizer)
+        if !enabled, engine != nil {
+            stop()
+        } else if enabled, engine == nil, !subscribers.isEmpty {
+            cooldownUntil = .distantPast
+            startIfNeeded()
+        }
     }
 
     func subscribe(_ owner: AnyObject, _ handler: @escaping ([Float], Bool) -> Void) {
@@ -365,6 +382,11 @@ private final class SpectrumAnalyzer {
             }
         }
 
+        // Чувствительность из настроек (0,5…2): выше — столбики выше и отзывчивее к тихому звуку.
+        let stored = UserDefaults.standard.double(forKey: Pref.eqSensitivity)
+        let sensitivity = Float(stored > 0 ? min(max(stored, 0.5), 2) : 1)
+        let range = min(80, max(18, 42 / sensitivity))
+        let gain = 0.75 + 0.25 * sensitivity
         let binWidth = sampleRate / Double(Self.size)
         for band in 0..<AudioLevelMeter.bandCount {
             let low = max(1, Int(Self.edges[band] / binWidth))
@@ -375,8 +397,8 @@ private final class SpectrumAnalyzer {
             let db = 10 * log10f(energy + 1e-12)
             // Потолок полосы: сразу поднимается к громкому, медленно (~6 дБ за секунду) опускается.
             ceilings[band] = max(db, ceilings[band] - 0.2)
-            let floor = ceilings[band] - 42
-            let target = max(0, min(1, (db - floor) / (ceilings[band] - floor)))
+            let floor = ceilings[band] - range
+            let target = max(0, min(1, (db - floor) / range * gain))
             let current = smoothed[band]
             smoothed[band] = target > current ? current + (target - current) * 0.65 : current + (target - current) * 0.22
         }

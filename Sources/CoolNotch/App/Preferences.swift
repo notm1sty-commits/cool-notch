@@ -15,6 +15,8 @@ enum Pref {
     static let systemNowPlaying = "systemNowPlaying"
     /// Эквалайзер под настоящий звук (нужно разрешение «Запись системного звука»).
     static let liveEqualizer = "liveEqualizer"
+    /// Чувствительность «настоящего» эквалайзера: 0,5…2, по умолчанию 1.
+    static let eqSensitivity = "eqSensitivity"
     static let systemNotifications = "systemNotifications"
     static let notchStyle = "notchStyle"
     static let fx3D = "fx3D"
@@ -44,6 +46,7 @@ enum Pref {
             browserMusic: false,
             systemNowPlaying: true,
             liveEqualizer: true,
+            eqSensitivity: 1.0,
             systemNotifications: true,
             notchStyle: "black",
             fx3D: true,

@@ -249,6 +249,8 @@ final class NowPlayingService {
     /// Куда листали в последний раз — в ту сторону и уезжает старое название.
     private(set) var lastSkipDirection = 1
     @ObservationIgnored private var switchingFrom: [PlayerSource: String] = [:]
+    /// Только что перемотали — пока плеер не подтвердил новую позицию, старую он не возвращает.
+    @ObservationIgnored private var pendingSeek: [PlayerSource: (target: Double, at: Date)] = [:]
     /// Только что переключили повтор — пока плеер не подтвердил, показываем выбранный режим.
     @ObservationIgnored private var pendingRepeat: [PlayerSource: (mode: RepeatMode, until: Date)] = [:]
     @ObservationIgnored private var switchTimeouts: [PlayerSource: Task<Void, Never>] = [:]
@@ -652,6 +654,7 @@ final class NowPlayingService {
 
     func seek(_ item: MediaItem, to seconds: Double) {
         let previous = candidates[item.id].map { ($0.elapsed, $0.elapsedTimestamp) }
+        pendingSeek[item.id] = (seconds, Date())
         if var candidate = candidates[item.id] {
             candidate.elapsed = seconds
             candidate.elapsedTimestamp = Date()
@@ -685,6 +688,7 @@ final class NowPlayingService {
                 self.controlIssues[item.id] = nil
                 self.scheduleRefresh()
             } else {
+                self.pendingSeek[item.id] = nil
                 if let previous, var candidate = self.candidates[item.id] {
                     candidate.elapsed = previous.0
                     candidate.elapsedTimestamp = previous.1
@@ -862,6 +866,28 @@ final class NowPlayingService {
                 position = current.elapsed
                 timestamp = current.elapsedTimestamp
             }
+        }
+        // Позиция: плееры часто присылают её с небольшим расхождением или (сразу после перемотки)
+        // ещё старую. Мелкие расхождения не трогаем — ползунок не дёргается; старую позицию после
+        // перемотки не принимаем, пока плеер не подтвердит новую (или не пройдёт 3 секунды).
+        if let existing = candidates[source], existing.track.title == newTrack.title {
+            let rate = existing.rate > 0 ? existing.rate : 1
+            let reportedNow = position + (playing ? now.timeIntervalSince(timestamp) * rate : 0)
+            let currentNow = existing.position(at: now)
+            if let seek = pendingSeek[source] {
+                let expected = seek.target + (playing ? now.timeIntervalSince(seek.at) * rate : 0)
+                if abs(reportedNow - expected) > 1.5, now.timeIntervalSince(seek.at) < 3 {
+                    position = existing.elapsed
+                    timestamp = existing.elapsedTimestamp
+                } else {
+                    pendingSeek[source] = nil
+                }
+            } else if existing.isPlaying == playing, abs(reportedNow - currentNow) < 0.75 {
+                position = existing.elapsed
+                timestamp = existing.elapsedTimestamp
+            }
+        } else {
+            pendingSeek[source] = nil
         }
         var candidate = candidates[source] ?? MediaCandidate(
             source: source,
@@ -1231,6 +1257,12 @@ final class NowPlayingService {
            previous.track != trackKey, previous.album != album {
             return nil
         }
+        // Та же картинка того же трека пришла ещё раз (например, после перемотки) — оставляем
+        // прежнюю: новая копия заставила бы обложку заново проявляться.
+        if let previous = artworkFingerprints[source], previous.hash == hash, previous.track == trackKey,
+           let current = candidates[source]?.artwork {
+            return current
+        }
         // Та же картинка уже принадлежит треку другого плеера (видео получило обложку музыки).
         let borrowed = artworkFingerprints.contains { other, fingerprint in
             other != source && fingerprint.hash == hash && fingerprint.album != album
@@ -1272,7 +1304,9 @@ final class NowPlayingService {
             candidates[source]?.repeatMode = reportedRepeat(client.repeatMode.flatMap(RepeatMode.init(rawValue:)), for: source)
             if let data = client.artwork {
                 candidates[source]?.artwork = freshArtwork(data, for: source, album: client.album, trackKey: key)
-            } else if !client.hasArtwork {
+            } else if !client.hasArtwork, artworkChanged {
+                // Обложки нет у нового трека — убираем; у того же трека она пропадает лишь на миг
+                // (перемотка), тогда оставляем прежнюю.
                 candidates[source]?.artwork = nil
             } else if artworkChanged {
                 candidates[source]?.artwork = nil
@@ -1360,7 +1394,8 @@ final class NowPlayingService {
             }
             if let data = info.artwork {
                 candidates[source]?.artwork = freshArtwork(data, for: source, album: info.album, trackKey: key)
-            } else if !info.hasArtwork {
+            } else if !info.hasArtwork, artworkChanged {
+                // Пропала обложка у того же трека (бывает на миг при перемотке) — оставляем прежнюю.
                 candidates[source]?.artwork = nil
             } else if artworkChanged {
                 bridge.send("refresh")

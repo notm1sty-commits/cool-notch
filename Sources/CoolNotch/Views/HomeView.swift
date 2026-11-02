@@ -680,6 +680,8 @@ private struct ProgressRow: View {
     @Environment(NotchViewModel.self) var vm
     @State var dragFraction: Double?
     @State var hovering = false
+    /// Позиция прыгнула (перемотка, новый трек) — сразу на место, а не медленным «доездом» за секунду.
+    @State var snapUntil = Date.distantPast
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -696,7 +698,11 @@ private struct ProgressRow: View {
                         Capsule()
                             .fill(Color.white)
                             .frame(width: max(active ? 8 : 5, geo.size.width * fraction))
-                            .animation(dragFraction == nil ? .linear(duration: 1) : nil, value: fraction)
+                            .animation(
+                                dragFraction != nil ? nil
+                                    : context.date < snapUntil ? .snappy(duration: 0.22) : .linear(duration: 1),
+                                value: fraction
+                            )
                     }
                     .frame(height: active ? 8 : 5)
                     .frame(maxHeight: .infinity)
@@ -725,6 +731,8 @@ private struct ProgressRow: View {
         .onHover { inside in
             withAnimation(Theme.hover) { hovering = inside }
         }
+        .onChange(of: item.elapsed) { _, _ in snapUntil = Date().addingTimeInterval(1.1) }
+        .onChange(of: item.title) { _, _ in snapUntil = Date().addingTimeInterval(1.1) }
     }
 }
 
