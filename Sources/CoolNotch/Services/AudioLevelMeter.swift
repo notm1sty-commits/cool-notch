@@ -102,6 +102,20 @@ final class AudioLevelMeter {
         }
     }
 
+    /// «Разрешить» в настройках: ненадолго включаем отвод звука — macOS сама покажет запрос
+    /// разрешения (закрытый системный вызов для этого падал). Потом выключаем, если эквалайзер
+    /// сейчас не на экране.
+    func requestAccess(_ done: @escaping @MainActor () -> Void) {
+        cooldownUntil = .distantPast
+        startIfNeeded()
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard let self else { return }
+            if self.subscribers.isEmpty { self.stop() }
+            done()
+        }
+    }
+
     private func startIfNeeded() {
         guard engine == nil, Pref.bool(Pref.liveEqualizer), Date() >= cooldownUntil else { return }
         guard #available(macOS 14.2, *) else { return }
@@ -156,8 +170,7 @@ final class AudioLevelMeter {
 enum AudioCapturePermission {
     enum Status { case authorized, denied, unknown }
 
-    private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int
-    private typealias Request = @convention(c) (CFString, CFDictionary?, @convention(block) (Bool) -> Void) -> Void
+    private typealias Preflight = @convention(c) (CFString, CFDictionary?) -> Int32
     private static let service = "kTCCServiceAudioCapture" as CFString
 
     private static func symbol(_ name: String) -> UnsafeMutableRawPointer? {
@@ -172,25 +185,6 @@ enum AudioCapturePermission {
         case 0: return .authorized
         case 1: return .denied
         default: return .unknown
-        }
-    }
-
-    /// Показывает системный запрос; если не вышло — открывает нужный раздел настроек.
-    static func request(_ completion: @escaping @MainActor (Bool) -> Void) {
-        guard let pointer = symbol("TCCAccessRequest") else {
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    openSettings()
-                    completion(false)
-                }
-            }
-            return
-        }
-        let request = unsafeBitCast(pointer, to: Request.self)
-        request(service, nil) { granted in
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { completion(granted) }
-            }
         }
     }
 

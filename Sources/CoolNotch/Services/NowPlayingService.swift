@@ -1199,7 +1199,8 @@ final class NowPlayingService {
         case "off"?, "false"?: repeatMode = .off
         default: repeatMode = nil
         }
-        candidates[player]?.repeatMode = reportedRepeat(repeatMode, for: player)
+        let confirmedRepeat = reportedRepeat(repeatMode, for: player)
+        candidates[player]?.repeatMode = confirmedRepeat
         recompute()
         if needsArtwork { loadArtwork(for: player, url: snapshot.artworkURL, key: key) }
     }
@@ -1301,9 +1302,14 @@ final class NowPlayingService {
             )
             if isNew { candidates[source]?.isLive = false }
             candidates[source]?.fromClients = true
-            candidates[source]?.repeatMode = reportedRepeat(client.repeatMode.flatMap(RepeatMode.init(rawValue:)), for: source)
+            let clientRepeat = reportedRepeat(client.repeatMode.flatMap(RepeatMode.init(rawValue:)), for: source)
+            candidates[source]?.repeatMode = clientRepeat
             if let data = client.artwork {
-                candidates[source]?.artwork = freshArtwork(data, for: source, album: client.album, trackKey: key)
+                // Сначала считаем картинку, потом записываем: freshArtwork сам читает candidates,
+                // а запись «candidates[...]?.artwork = …» начинает изменение раньше, чем вычисляет
+                // правую часть, — одновременный доступ Swift завершает аварийно.
+                let image = freshArtwork(data, for: source, album: client.album, trackKey: key)
+                candidates[source]?.artwork = image
             } else if !client.hasArtwork, artworkChanged {
                 // Обложки нет у нового трека — убираем; у того же трека она пропадает лишь на миг
                 // (перемотка), тогда оставляем прежнюю.
@@ -1386,14 +1392,17 @@ final class NowPlayingService {
             )
             // Браузерные вкладки повтор не поддерживают — кнопку для них не показываем.
             let reported = source.browserKind == nil ? info.repeatMode.flatMap(RepeatMode.init(rawValue:)) : nil
-            candidates[source]?.repeatMode = reportedRepeat(reported, for: source)
+            let confirmedRepeat = reportedRepeat(reported, for: source)
+            candidates[source]?.repeatMode = confirmedRepeat
             // Подтягиваем вкладку браузера, если её уже знаем из опроса.
             if let kind = source.browserKind, let tab = candidates[.browser(kind)], tab.track.title == info.title {
                 candidates[source]?.tabURL = tab.tabURL
                 candidates[source]?.tabTitle = tab.tabTitle
             }
             if let data = info.artwork {
-                candidates[source]?.artwork = freshArtwork(data, for: source, album: info.album, trackKey: key)
+                // См. выше: сначала картинка, потом запись — без одновременного доступа к candidates.
+                let image = freshArtwork(data, for: source, album: info.album, trackKey: key)
+                candidates[source]?.artwork = image
             } else if !info.hasArtwork, artworkChanged {
                 // Пропала обложка у того же трека (бывает на миг при перемотке) — оставляем прежнюю.
                 candidates[source]?.artwork = nil

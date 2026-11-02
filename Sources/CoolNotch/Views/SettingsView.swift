@@ -323,7 +323,7 @@ private struct AudioCaptureRow: View {
                         if status == .denied {
                             AudioCapturePermission.openSettings()
                         } else {
-                            AudioCapturePermission.request { _ in status = AudioCapturePermission.status }
+                            AudioLevelMeter.shared.requestAccess { status = AudioCapturePermission.status }
                         }
                     }
                 }
